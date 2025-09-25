@@ -1,4 +1,4 @@
-package org.firstinspires.ftc.teamcode.jules.tests;
+/* package org.firstinspires.ftc.teamcode.jules;
 
 import com.bylazar.telemetry.PanelsTelemetry;          // <-- add
 import com.bylazar.telemetry.TelemetryManager;        // <-- add
@@ -67,3 +67,4 @@ public class JulesTapDemo extends OpMode {
     private void setDrivePower(double p){ lf.setPower(p); rf.setPower(p); }
     private double readHeadingDeg(){ return imu.getAngularOrientation().firstAngle; }
 }
+/*

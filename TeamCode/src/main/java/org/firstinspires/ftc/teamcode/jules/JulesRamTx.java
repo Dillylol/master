@@ -3,6 +3,7 @@ package org.firstinspires.ftc.teamcode.jules;
 
 import com.bylazar.telemetry.TelemetryManager;
 import org.firstinspires.ftc.robotcore.external.Telemetry;
+import org.firstinspires.ftc.teamcode.jules.bridge.JulesBuffer;
 
 public class JulesRamTx implements AutoCloseable {
     private final JulesBuffer buffer;

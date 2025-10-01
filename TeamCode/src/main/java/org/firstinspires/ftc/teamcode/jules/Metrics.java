@@ -7,4 +7,16 @@ public final class Metrics {
     public double headingDeg; // degrees
     public double batteryV;   // volts
     public String label;      // optional tag
+
+    // Odometry
+    public double x;
+    public double y;
+    public double heading; // radians
+
+    // IMU
+    public double pitch;
+    public double roll;
+    public double yawRate;
+    public double pitchRate;
+    public double rollRate;
 }

@@ -2,13 +2,15 @@ package org.firstinspires.ftc.teamcode.jules.tests;
 
 import com.bylazar.telemetry.PanelsTelemetry;
 import com.bylazar.telemetry.TelemetryManager;
-import com.qualcomm.hardware.bosch.BNO055IMU;
 import com.qualcomm.robotcore.eventloop.opmode.OpMode;
 import com.qualcomm.robotcore.eventloop.opmode.TeleOp;
 import com.qualcomm.robotcore.hardware.DcMotor;
 import com.qualcomm.robotcore.hardware.DcMotorEx;
 import com.qualcomm.robotcore.hardware.VoltageSensor;
 import android.content.Context;
+import com.qualcomm.robotcore.hardware.IMU;
+import com.qualcomm.hardware.rev.RevHubOrientationOnRobot;
+import org.firstinspires.ftc.robotcore.external.navigation.AngleUnit;
 
 import org.firstinspires.ftc.teamcode.jules.JulesRamTx;
 import org.firstinspires.ftc.teamcode.jules.JulesTap;
@@ -26,7 +28,7 @@ import java.io.IOException;
 @TeleOp(name="Jules: RAM Tx Demo (HTTP Stream)", group="Jules")
 public class JulesTapDemo extends OpMode {
     DcMotorEx lf, rf;
-    BNO055IMU imu;
+    IMU imu;
     VoltageSensor vs;
 
     static final double TPR = 537.7;
@@ -50,10 +52,13 @@ public class JulesTapDemo extends OpMode {
         lf.setMode(DcMotor.RunMode.RUN_USING_ENCODER);
         rf.setMode(DcMotor.RunMode.RUN_USING_ENCODER);
 
-        imu = hardwareMap.get(BNO055IMU.class, "imu");
-        BNO055IMU.Parameters parameters = new BNO055IMU.Parameters();
-        parameters.angleUnit = BNO055IMU.AngleUnit.DEGREES;
-        imu.initialize(parameters);
+        imu = hardwareMap.get(IMU.class, "imu");
+
+        // *** IMPORTANT: You must update the directions below to match your robot's hub mounting!
+        RevHubOrientationOnRobot.LogoFacingDirection logoDirection = RevHubOrientationOnRobot.LogoFacingDirection.UP;
+        RevHubOrientationOnRobot.UsbFacingDirection  usbDirection  = RevHubOrientationOnRobot.UsbFacingDirection.FORWARD;
+        RevHubOrientationOnRobot orientationOnRobot = new RevHubOrientationOnRobot(logoDirection, usbDirection);
+        imu.initialize(new IMU.Parameters(orientationOnRobot));
 
         vs = hardwareMap.voltageSensor.iterator().next();
 
@@ -76,6 +81,9 @@ public class JulesTapDemo extends OpMode {
             // pass the stable token so it doesn’t change each run
             http = new JulesHttpBridge(58080, adapter, adapter, token, streamBus);
             telemetry.addData("JULES", "HTTP up");
+            panelsTM.debug(http.advertiseLine());
+            panelsTM.debug("JULES Token", token);
+            panelsTM.update(telemetry);
         } catch (IOException e) {
             telemetry.addData("JULES HTTP", "failed: %s", e.getMessage());
         }
@@ -115,5 +123,8 @@ public class JulesTapDemo extends OpMode {
     }
 
     private void setDrivePower(double p){ lf.setPower(p); rf.setPower(p); }
-    private double readHeadingDeg(){ return imu.getAngularOrientation().firstAngle; }
+    private double readHeadingDeg(){
+        // This will return the Yaw angle (Z-axis rotation) in degrees
+        return imu.getRobotYawPitchRollAngles().getYaw(AngleUnit.DEGREES);
+    }
 }

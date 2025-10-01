@@ -175,7 +175,7 @@ public class JulesHttpBridge extends NanoHTTPD implements AutoCloseable {
 
                     Thread t = new Thread(() -> {
                         final java.io.OutputStreamWriter w = new java.io.OutputStreamWriter(pos);
-                        final long heartbeatMs = 15000;
+                        final long heartbeatMs = 5000; 
                         long lastBeat = System.currentTimeMillis();
                         try {
                             w.write(":\n\n"); w.flush();

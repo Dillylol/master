@@ -1,92 +1,64 @@
-
+// File: TeamCode/src/main/java/org/firstinspires/ftc/teamcode/jules/bridge/JulesBufferJsonAdapter.java
 package org.firstinspires.ftc.teamcode.jules.bridge;
+
+import org.firstinspires.ftc.teamcode.jules.Metrics;
 
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
-import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.function.Function;
 
-/**
- * Minimal, non-invasive adapter that turns your existing JulesBuffer into
- * JSONL for the HTTP bridge, with optional incremental (since=) support
- * and label injection even if your buffer doesn't natively store labels.
- *
- * You supply:
- *  1) A way to snapshot-read samples as a stable {@code List<T>} or {@code Iterator<T>}.
- *  2) A JSON encoder for each sample (T -> String JSON).
- *  3) A timestamp extractor (T -> epochMs) so we can support since-filtering.
- *
- * If your buffer already stores JSON strings per sample, you can skip this and use
- * {@code JulesHttpBridge.dumperFrom(() -> buffer.jsonLinesIterator())} instead.
- */
-public class JulesBufferJsonAdapter<T> implements JulesHttpBridge.Dumper, JulesHttpBridge.Labeler {
+public class JulesBufferJsonAdapter implements JulesHttpBridge.Dumper, JulesHttpBridge.Labeler {
+    private final JulesBuffer buffer;
 
-    /** Your immutable snapshot of samples (replace with a call into JulesBuffer). */
-    public interface SnapshotProvider<T> {
-        /** Return a stable, read-only view of all samples collected so far. */
-        List<T> snapshotAll();
+    public JulesBufferJsonAdapter(JulesBuffer buffer) {
+        this.buffer = buffer;
     }
 
-    private final SnapshotProvider<T> provider;
-    private final Function<T, Long> tsExtractor;   // T -> epochMs
-    private final Function<T, String> jsonEncoder; // T -> JSON (no trailing newline)
-
-    // Sidecar labels (JSONL lines) for teams whose buffer doesn't yet store labels.
-    private final CopyOnWriteArrayList<Label> labels = new CopyOnWriteArrayList<>();
-
-    public JulesBufferJsonAdapter(SnapshotProvider<T> provider,
-                                  Function<T, Long> tsExtractor,
-                                  Function<T, String> jsonEncoder) {
-        this.provider = provider;
-        this.tsExtractor = tsExtractor;
-        this.jsonEncoder = jsonEncoder;
-    }
-
-    // ------------------------- Dumper -------------------------
+    /**
+     * Dumps all metrics from the buffer as an iterator of JSON strings (JSONL format).
+     * @return An iterator where each string is a complete JSON object.
+     */
     @Override
     public Iterator<String> dumpAll() {
         List<String> out = new ArrayList<>();
-        // Samples
-        for (T s : provider.snapshotAll()) {
-            String j = jsonEncoder.apply(s);
-            if (j != null) out.add(j);
-        }
-        // Labels
-        for (Label l : labels) out.add(l.toJson());
-        return out.iterator();
-    }
-
-    @Override
-    public Iterator<String> dumpSince(long sinceEpochMs) {
-        List<String> out = new ArrayList<>();
-        for (T s : provider.snapshotAll()) {
-            Long t = tsExtractor.apply(s);
-            if (t != null && t > sinceEpochMs) {
-                String j = jsonEncoder.apply(s);
-                if (j != null) out.add(j);
+        // We get a snapshot of the buffer to avoid issues with concurrent modification
+        for (Metrics m : buffer.snapshot()) {
+            if (m != null) {
+                // Use the encoder from the metrics adapter for a consistent format
+                out.add(JulesMetricsHttpAdapter.encodePublic(m));
             }
         }
-        for (Label l : labels) if (l.t > sinceEpochMs) out.add(l.toJson());
         return out.iterator();
     }
 
-    // ------------------------- Labeler -------------------------
+    /**
+     * Dumps all metrics recorded after a specific timestamp.
+     * @param sinceMs The timestamp in milliseconds.
+     * @return An iterator of JSON strings for metrics newer than the timestamp.
+     */
     @Override
-    public void addLabel(long epochMs, String text) {
-        labels.add(new Label(epochMs, text));
+    public Iterator<String> dumpSince(long sinceMs) {
+        List<String> out = new ArrayList<>();
+        for (Metrics m : buffer.snapshot()) {
+            if (m != null) {
+                // Convert the metric's time (in seconds) to milliseconds for comparison
+                long tMs = Math.round(m.t * 1000.0);
+                if (tMs > sinceMs) {
+                    out.add(JulesMetricsHttpAdapter.encodePublic(m));
+                }
+            }
+        }
+        return out.iterator();
     }
 
-    private static final class Label {
-        final long t; final String text;
-        Label(long t, String text) { this.t = t; this.text = text; }
-        String toJson() {
-            // Escape backslashes and double quotes for JSON string safety
-            String safe = (text == null) ? ""
-                    : text.replace("\\", "\\\\").replace("\"", "\\\"");
-            return "{\"t\":" + t + ",\"type\":\"label\",\"text\":\"" + safe + "\"}";
-        }
-
+    /**
+     * Adds a label to the buffer.
+     * @param tMillis The timestamp for the label (provided by the bridge).
+     * @param text The text of the label.
+     */
+    @Override
+    public void addLabel(long tMillis, String text) {
+        // This now correctly calls the label method we added to JulesBuffer
+        buffer.label(text);
     }
 }
-

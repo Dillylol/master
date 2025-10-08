@@ -7,7 +7,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.LinkedBlockingQueue;
 
 /**
- * Generic line based stream bus.
+ * Generic line-based stream bus.
  * - Call publishJsonLine("{...}") for live samples (one JSON object per call).
  * - Clients can subscribe() to receive those lines in order.
  * - No formatting here: upstream encoders produce the JSON strings.

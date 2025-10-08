@@ -26,8 +26,7 @@ public class JulesHttpBridge extends NanoHTTPD implements AutoCloseable {
     private final JulesStreamBus streamBus;
     private String ip = "N/A";
 
-    // --- RESTORED INTERFACES ---
-    // These define the contract for how the bridge dumps data and adds labels.
+    // --- INTERFACES FOR MODULARITY ---
     public interface Dumper {
         Iterator<String> dumpAll();
         Iterator<String> dumpSince(long sinceMs);
@@ -35,11 +34,8 @@ public class JulesHttpBridge extends NanoHTTPD implements AutoCloseable {
     public interface Labeler {
         void addLabel(long tMillis, String text);
     }
-    // ---------------------------
+    // ------------------------------------
 
-    /**
-     * The complete constructor. It now correctly uses the Dumper and Labeler interfaces.
-     */
     public JulesHttpBridge(int port, Dumper dumper, Labeler labeler, String token, JulesStreamBus streamBus) throws IOException {
         super(port);
         this.token = token;
@@ -58,94 +54,144 @@ public class JulesHttpBridge extends NanoHTTPD implements AutoCloseable {
         Map<String, String> params = session.getParms();
 
         try {
-            // Universal token check for all endpoints
+            // --- Universal Token Check ---
+            // A valid token is required for all endpoints.
             if (params.get("token") == null || !params.get("token").equals(token)) {
                 return newFixedLengthResponse(Response.Status.UNAUTHORIZED, "application/json", "{\"ok\":false,\"error\":\"invalid token\"}");
             }
 
-            // --- ENDPOINTS ---
+            // --- COMMAND & CONTROL ENDPOINTS ---
+
+            // Gets the list of available "virtual OpModes" from JulesCommand
+            if ("/jules/opmodes".equals(uri) && method == Method.GET) {
+                String json = new Gson().toJson(JulesCommand.getCommandNames());
+                return newFixedLengthResponse(Response.Status.OK, "application/json", json);
+            }
+
+            // Sets the command for the activator OpMode to run
+            if ("/jules/run-opmode".equals(uri) && method == Method.POST) {
+                final HashMap<String, String> files = new HashMap<>();
+                session.parseBody(files);
+                String opModeName = new Gson().fromJson(files.get("postData"), HashMap.class).get("opModeName").toString();
+                JulesCommand.setCommand(opModeName);
+                return newFixedLengthResponse(Response.Status.OK, "application/json", "{\"ok\":true}");
+            }
+
+            // Stops the current command and returns the activator OpMode to IDLE
+            if ("/jules/stop-opmode".equals(uri) && method == Method.POST) {
+                JulesCommand.setCommand(JulesCommand.Command.IDLE);
+                return newFixedLengthResponse(Response.Status.OK, "application/json", "{\"ok\":true}");
+            }
+
+            // --- DATA & TUNING ENDPOINTS ---
 
             if ("/jules/label".equals(uri) && params.containsKey("label")) {
-                // This now correctly uses the Labeler interface
                 labeler.addLabel(System.currentTimeMillis(), params.get("label"));
                 return newFixedLengthResponse(Response.Status.OK, "application/json", "{\"ok\":true}");
             }
 
             if ("/jules/dump".equals(uri)) {
-                // This now correctly uses the Dumper interface
-                final Iterator<String> iter;
-                if (params.containsKey("since")) {
-                    iter = dumper.dumpSince(Long.parseLong(params.get("since")));
-                } else {
-                    iter = dumper.dumpAll();
-                }
+                final Iterator<String> iter = params.containsKey("since")
+                        ? dumper.dumpSince(Long.parseLong(params.get("since")))
+                        : dumper.dumpAll();
 
-                // Create a response from the iterator, formatting as JSON Lines
-                InputStream is = new InputStream() {
-                    private byte[] currentLine = null;
-                    private int index = 0;
-
-                    @Override
-                    public int read() throws IOException {
-                        if (currentLine == null || index >= currentLine.length) {
-                            if (!iter.hasNext()) {
-                                return -1; // End of stream
-                            }
-                            currentLine = (iter.next() + "\n").getBytes("UTF-8");
-                            index = 0;
-                        }
-                        return currentLine[index++];
-                    }
-                };
+                // Creates a JSONL (JSON Lines) response from the iterator
+                InputStream is = createInputStream(iter);
                 return newChunkedResponse(Response.Status.OK, "application/jsonl; charset=utf-8", is);
             }
 
             if ("/jules/update-constants".equals(uri) && method == Method.POST) {
+
                 final HashMap<String, String> files = new HashMap<>();
+
                 session.parseBody(files);
+
                 final String jsonBody = files.get("postData");
+
                 Gson gson = new Gson();
+
                 Map<String, Double> updates = gson.fromJson(jsonBody, new TypeToken<Map<String, Double>>(){}.getType());
+
                 for (Map.Entry<String, Double> entry : updates.entrySet()) {
+
                     try {
+
                         Field field = Constants.class.getField(entry.getKey());
+
                         if (java.lang.reflect.Modifier.isStatic(field.getModifiers())) {
+
                             field.set(null, entry.getValue());
+
                         }
+
                     } catch (Exception e) {
+
                         System.out.println("JULES: Could not update constant '" + entry.getKey() + "': " + e.getMessage());
+
                     }
+
                 }
+
                 return newFixedLengthResponse(Response.Status.OK, "application/json", "{\"ok\":true}");
+
             }
 
+
+
             if ("/jules/stream".equals(uri) && method == Method.GET) {
+
                 InputStream dataStream = new InputStream() {
+
                     private final JulesStreamBus.Subscription sub = streamBus.subscribe();
+
                     private byte[] currentData = null;
+
                     private int dataIndex = 0;
+
                     @Override
+
                     public int read() throws IOException {
+
                         if (currentData == null || dataIndex >= currentData.length) {
+
                             try {
+
                                 String line = sub.take();
+
                                 if (line == null) return -1;
+
                                 currentData = ("data: " + line + "\n\n").getBytes("UTF-8");
+
                                 dataIndex = 0;
+
                             } catch (InterruptedException e) {
+
                                 Thread.currentThread().interrupt();
+
                                 return -1;
+
                             }
+
                         }
+
                         return currentData[dataIndex++] & 0xFF;
+
                     }
+
                     @Override public void close() throws IOException { sub.close(); super.close(); }
+
                 };
+
                 Response r = newChunkedResponse(Response.Status.OK, "text/event-stream; charset=utf-8", dataStream);
+
                 r.addHeader("Cache-Control", "no-cache");
+
                 r.addHeader("Connection", "keep-alive");
+
                 r.addHeader("Access-Control-Allow-Origin", "*");
+
                 return r;
+
             }
 
             return newFixedLengthResponse(Response.Status.NOT_FOUND, "application/json", "{\"ok\":false,\"error\":\"not found\"}");
@@ -153,6 +199,27 @@ public class JulesHttpBridge extends NanoHTTPD implements AutoCloseable {
         } catch (Exception e) {
             return newFixedLengthResponse(Response.Status.INTERNAL_ERROR, "application/json", "{\"ok\":false, \"error\":\"" + e.getClass().getSimpleName() + "\"}");
         }
+    }
+
+    // --- HELPER METHODS ---
+
+    private InputStream createInputStream(Iterator<String> iter) {
+        return new InputStream() {
+            private byte[] currentLine = null;
+            private int index = 0;
+
+            @Override
+            public int read() throws IOException {
+                if (currentLine == null || index >= currentLine.length) {
+                    if (!iter.hasNext()) {
+                        return -1; // End of stream
+                    }
+                    currentLine = (iter.next() + "\n").getBytes("UTF-8");
+                    index = 0;
+                }
+                return currentLine[index++];
+            }
+        };
     }
 
     public String advertiseLine() {

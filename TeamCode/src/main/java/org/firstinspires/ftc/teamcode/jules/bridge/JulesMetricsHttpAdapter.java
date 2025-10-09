@@ -1,9 +1,7 @@
 // File: TeamCode/src/main/java/org/firstinspires/ftc/teamcode/jules/bridge/JulesMetricsHttpAdapter.java
-
 package org.firstinspires.ftc.teamcode.jules.bridge;
 
 import org.firstinspires.ftc.teamcode.jules.Metrics;
-import com.google.gson.Gson;
 
 public class JulesMetricsHttpAdapter {
     private final JulesBuffer buffer;
@@ -12,22 +10,9 @@ public class JulesMetricsHttpAdapter {
         this.buffer = buffer;
     }
 
-    public String dumpJsonLines() {
-        StringBuilder sb = new StringBuilder();
-        Metrics[] snapshot = buffer.snapshot();
-        for (Metrics m : snapshot) {
-            if (m != null) {
-                sb.append(encodePublic(m));
-                sb.append('\n');
-            }
-        }
-        return sb.toString();
-    }
-
     public static String encodePublic(Metrics m) {
         if (m == null) return "{}";
 
-        // Use a StringBuilder for efficient string construction
         StringBuilder sb = new StringBuilder(256);
         sb.append("{\"ts\":").append(m.t)
                 .append(",\"cmd\":").append(m.cmdPower)
@@ -43,13 +28,13 @@ public class JulesMetricsHttpAdapter {
                 .append(",\"pitchRate\":").append(m.pitchRate)
                 .append(",\"rollRate\":").append(m.rollRate);
 
-        // --- NEW: Correctly handle the label field ---
-        // If a label exists, escape it and add it to the JSON object.
+        // --- CORRECTED SECTION ---
+        // If a label exists, escape special characters and add it to the JSON.
         if (m.label != null && !m.label.isEmpty()) {
             String safeLabel = m.label.replace("\\", "\\\\").replace("\"", "\\\"");
             sb.append(",\"label\":\"").append(safeLabel).append("\"");
         }
-        // ---------------------------------------------
+        // -------------------------
 
         sb.append("}");
         return sb.toString();

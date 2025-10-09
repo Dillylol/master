@@ -55,31 +55,18 @@ public class JulesHttpBridge extends NanoHTTPD implements AutoCloseable {
 
         try {
             // --- Universal Token Check ---
-            // A valid token is required for all endpoints.
             if (params.get("token") == null || !params.get("token").equals(token)) {
                 return newFixedLengthResponse(Response.Status.UNAUTHORIZED, "application/json", "{\"ok\":false,\"error\":\"invalid token\"}");
             }
 
-            // --- COMMAND & CONTROL ENDPOINTS ---
-
-            // Gets the list of available "virtual OpModes" from JulesCommand
-            if ("/jules/opmodes".equals(uri) && method == Method.GET) {
-                String json = new Gson().toJson(JulesCommand.getCommandNames());
-                return newFixedLengthResponse(Response.Status.OK, "application/json", json);
-            }
-
-            // Sets the command for the activator OpMode to run
-            if ("/jules/run-opmode".equals(uri) && method == Method.POST) {
+            // --- UNIFIED COMMAND ENDPOINT ---
+            // This single endpoint handles all commands from the client, including "IDLE" to stop.
+            if ("/jules/command".equals(uri) && method == Method.POST) {
                 final HashMap<String, String> files = new HashMap<>();
                 session.parseBody(files);
-                String opModeName = new Gson().fromJson(files.get("postData"), HashMap.class).get("opModeName").toString();
-                JulesCommand.setCommand(opModeName);
-                return newFixedLengthResponse(Response.Status.OK, "application/json", "{\"ok\":true}");
-            }
-
-            // Stops the current command and returns the activator OpMode to IDLE
-            if ("/jules/stop-opmode".equals(uri) && method == Method.POST) {
-                JulesCommand.setCommand(JulesCommand.Command.IDLE);
+                // Expects JSON like: {"command": "DRIVE_FORWARD_4T_0.5V"}
+                String commandStr = new Gson().fromJson(files.get("postData"), HashMap.class).get("command").toString();
+                JulesCommand.setCommand(commandStr);
                 return newFixedLengthResponse(Response.Status.OK, "application/json", "{\"ok\":true}");
             }
 
@@ -94,108 +81,37 @@ public class JulesHttpBridge extends NanoHTTPD implements AutoCloseable {
                 final Iterator<String> iter = params.containsKey("since")
                         ? dumper.dumpSince(Long.parseLong(params.get("since")))
                         : dumper.dumpAll();
-
-                // Creates a JSONL (JSON Lines) response from the iterator
-                InputStream is = createInputStream(iter);
-                return newChunkedResponse(Response.Status.OK, "application/jsonl; charset=utf-8", is);
+                return newChunkedResponse(Response.Status.OK, "application/jsonl; charset=utf-8", createInputStream(iter));
             }
 
             if ("/jules/update-constants".equals(uri) && method == Method.POST) {
-
                 final HashMap<String, String> files = new HashMap<>();
-
                 session.parseBody(files);
-
                 final String jsonBody = files.get("postData");
-
-                Gson gson = new Gson();
-
-                Map<String, Double> updates = gson.fromJson(jsonBody, new TypeToken<Map<String, Double>>(){}.getType());
-
+                Map<String, Double> updates = new Gson().fromJson(jsonBody, new TypeToken<Map<String, Double>>(){}.getType());
                 for (Map.Entry<String, Double> entry : updates.entrySet()) {
-
                     try {
-
                         Field field = Constants.class.getField(entry.getKey());
-
                         if (java.lang.reflect.Modifier.isStatic(field.getModifiers())) {
-
                             field.set(null, entry.getValue());
-
                         }
-
                     } catch (Exception e) {
-
                         System.out.println("JULES: Could not update constant '" + entry.getKey() + "': " + e.getMessage());
-
                     }
-
                 }
-
                 return newFixedLengthResponse(Response.Status.OK, "application/json", "{\"ok\":true}");
-
             }
 
-
-
             if ("/jules/stream".equals(uri) && method == Method.GET) {
-
-                InputStream dataStream = new InputStream() {
-
-                    private final JulesStreamBus.Subscription sub = streamBus.subscribe();
-
-                    private byte[] currentData = null;
-
-                    private int dataIndex = 0;
-
-                    @Override
-
-                    public int read() throws IOException {
-
-                        if (currentData == null || dataIndex >= currentData.length) {
-
-                            try {
-
-                                String line = sub.take();
-
-                                if (line == null) return -1;
-
-                                currentData = ("data: " + line + "\n\n").getBytes("UTF-8");
-
-                                dataIndex = 0;
-
-                            } catch (InterruptedException e) {
-
-                                Thread.currentThread().interrupt();
-
-                                return -1;
-
-                            }
-
-                        }
-
-                        return currentData[dataIndex++] & 0xFF;
-
-                    }
-
-                    @Override public void close() throws IOException { sub.close(); super.close(); }
-
-                };
-
+                InputStream dataStream = createStreamingInputStream();
                 Response r = newChunkedResponse(Response.Status.OK, "text/event-stream; charset=utf-8", dataStream);
-
                 r.addHeader("Cache-Control", "no-cache");
-
                 r.addHeader("Connection", "keep-alive");
-
                 r.addHeader("Access-Control-Allow-Origin", "*");
-
                 return r;
-
             }
 
             return newFixedLengthResponse(Response.Status.NOT_FOUND, "application/json", "{\"ok\":false,\"error\":\"not found\"}");
-
         } catch (Exception e) {
             return newFixedLengthResponse(Response.Status.INTERNAL_ERROR, "application/json", "{\"ok\":false, \"error\":\"" + e.getClass().getSimpleName() + "\"}");
         }
@@ -207,18 +123,39 @@ public class JulesHttpBridge extends NanoHTTPD implements AutoCloseable {
         return new InputStream() {
             private byte[] currentLine = null;
             private int index = 0;
-
             @Override
             public int read() throws IOException {
                 if (currentLine == null || index >= currentLine.length) {
-                    if (!iter.hasNext()) {
-                        return -1; // End of stream
-                    }
+                    if (!iter.hasNext()) return -1;
                     currentLine = (iter.next() + "\n").getBytes("UTF-8");
                     index = 0;
                 }
                 return currentLine[index++];
             }
+        };
+    }
+
+    private InputStream createStreamingInputStream() {
+        return new InputStream() {
+            private final JulesStreamBus.Subscription sub = streamBus.subscribe();
+            private byte[] currentData = null;
+            private int dataIndex = 0;
+            @Override
+            public int read() throws IOException {
+                if (currentData == null || dataIndex >= currentData.length) {
+                    try {
+                        String line = sub.take();
+                        if (line == null) return -1;
+                        currentData = ("data: " + line + "\n\n").getBytes("UTF-8");
+                        dataIndex = 0;
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        return -1;
+                    }
+                }
+                return currentData[dataIndex++] & 0xFF;
+            }
+            @Override public void close() throws IOException { sub.close(); super.close(); }
         };
     }
 

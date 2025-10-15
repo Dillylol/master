@@ -21,4 +21,7 @@ public final class Metrics {
     public double yawRate;    // degrees/sec
     public double pitchRate;  // degrees/sec
     public double rollRate;   // degrees/sec
+    public String label;
+
+    public String jsonData;
 }

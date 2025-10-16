@@ -1,4 +1,5 @@
-package org.firstinspires.ftc.teamcode.jules;
+// File: TeamCode/src/main/java/org/firstinspires/ftc/teamcode/jules/JulesTap.java
+package org.firstinspires.ftc.teamcode.jules.tests;
 
 import com.qualcomm.robotcore.hardware.DcMotorEx;
 import com.qualcomm.robotcore.hardware.IMU;
@@ -7,8 +8,8 @@ import com.qualcomm.robotcore.util.ElapsedTime;
 import org.firstinspires.ftc.robotcore.external.navigation.AngleUnit;
 import org.firstinspires.ftc.robotcore.external.navigation.AngularVelocity;
 import org.firstinspires.ftc.robotcore.external.navigation.YawPitchRollAngles;
-import com.pedropathing.follower.Follower; // For odometry pose
-
+import com.pedropathing.follower.Follower;
+import org.firstinspires.ftc.teamcode.jules.Metrics;
 import java.util.List;
 
 public class JulesTap {
@@ -17,48 +18,30 @@ public class JulesTap {
     private final VoltageSensor vs;
     private final double ticksPerRev;
 
-    // These are no longer final so they can be updated live
     private double wheelDiameterIn;
     private double gearRatio;
 
     private volatile double lastCmd = 0.0;
 
-    // --- Main Constructor ---
-    public JulesTap(double ticksPerRev, double wheelDiameterIn, double gearRatio,
-                    VoltageSensor battery, DcMotorEx... sampleMotors) {
+    public JulesTap(double ticksPerRev, double wheelDiameterIn, double gearRatio, VoltageSensor battery, DcMotorEx... sampleMotors) {
         this.ticksPerRev = ticksPerRev;
         this.vs = battery;
         this.motors = sampleMotors;
-        // Set the initial values using our new updatable method
         updateConstants(wheelDiameterIn, gearRatio);
         clock.reset();
     }
 
-    // --- Constructor overload to accept a List of motors ---
-    public JulesTap(double ticksPerRev, double wheelDiameterIn, double gearRatio,
-                    VoltageSensor battery, List<DcMotorEx> sampleMotors) {
+    public JulesTap(double ticksPerRev, double wheelDiameterIn, double gearRatio, VoltageSensor battery, List<DcMotorEx> sampleMotors) {
         this(ticksPerRev, wheelDiameterIn, gearRatio, battery, sampleMotors.toArray(new DcMotorEx[0]));
     }
 
-    /**
-     * Updates the physical constants used for velocity calculations.
-     * Call this in your loop to ensure the tap is using the latest tuned values.
-     */
     public void updateConstants(double wheelDiameterIn, double gearRatio) {
         this.wheelDiameterIn = wheelDiameterIn;
         this.gearRatio = gearRatio;
     }
 
-    /** Call this right where you command drive power so the log matches the command. */
     public void setLastCmd(double cmdPower) { this.lastCmd = clamp(cmdPower, -1.0, 1.0); }
 
-    /**
-     * Samples all robot metrics.
-     * This is the primary data collection method.
-     * @param imu The robot's IMU for orientation and angular velocity.
-     * @param follower The Pedro Pathing Follower for odometry pose.
-     * @return A Metrics object populated with the latest data.
-     */
     public Metrics sample(IMU imu, Follower follower) {
         Metrics m = new Metrics();
         m.t = clock.seconds();
@@ -66,7 +49,6 @@ public class JulesTap {
         m.velIPS = encodersToIPS();
         m.batteryV = safeVoltage();
 
-        // --- NEW: Add Full Odometry and IMU Data ---
         if (follower != null) {
             m.x = follower.getPose().getX();
             m.y = follower.getPose().getY();
@@ -86,21 +68,7 @@ public class JulesTap {
         return m;
     }
 
-    /** Overloaded sample method for tests that don't need IMU/Odo. */
-    public Metrics sample(double headingDeg) {
-        Metrics m = new Metrics();
-        m.t          = clock.seconds();
-        m.cmdPower   = lastCmd;
-        m.velIPS     = encodersToIPS();
-        m.headingDeg = headingDeg;
-        m.batteryV   = safeVoltage();
-        return m;
-    }
-
-
-    // ----- Helpers -----
     private double encodersToIPS() {
-        // This calculation now uses the updatable member variables
         double tps = 0.0;
         for (DcMotorEx m : motors) {
             tps += m.getVelocity();

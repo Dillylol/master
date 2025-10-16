@@ -3,28 +3,64 @@ package org.firstinspires.ftc.teamcode.pedroPathing;
 import com.pedropathing.follower.Follower;
 import com.pedropathing.follower.FollowerConstants;
 import com.pedropathing.ftc.FollowerBuilder;
+import com.pedropathing.ftc.drivetrains.MecanumConstants;
+import com.pedropathing.ftc.localization.Encoder;
+import com.pedropathing.ftc.localization.constants.ThreeWheelIMUConstants;
 import com.pedropathing.paths.PathConstraints;
+import com.qualcomm.hardware.rev.RevHubOrientationOnRobot;
+import com.qualcomm.robotcore.hardware.DcMotorSimple;
 import com.qualcomm.robotcore.hardware.HardwareMap;
-import com.bylazar.configurables.annotations.Configurable;
 
-@Configurable
 public class Constants {
-    public static FollowerConstants followerConstants = new FollowerConstants();
+    public static MecanumConstants driveConstants = new MecanumConstants()
+            .maxPower(1)
+            .rightFrontMotorName("rf")
+            .rightRearMotorName("rr")
+            .leftRearMotorName("lr")
+            .leftFrontMotorName("lf")
+            .leftFrontMotorDirection(DcMotorSimple.Direction.REVERSE)
+            .leftRearMotorDirection(DcMotorSimple.Direction.REVERSE)
+            .rightFrontMotorDirection(DcMotorSimple.Direction.FORWARD)
+            .rightRearMotorDirection(DcMotorSimple.Direction.FORWARD)
+            .xVelocity(1)
+            .yVelocity(1);
 
+    public static ThreeWheelIMUConstants localizerConstants = new ThreeWheelIMUConstants()
+            .forwardTicksToInches(.001989436789)
+            .strafeTicksToInches(.001989436789)
+            .turnTicksToInches(.001989436789)
+            .leftPodY(1)
+            .rightPodY(-1)
+            .strafePodX(-2.5)
+            .leftEncoder_HardwareMapName("leftFront")
+            .rightEncoder_HardwareMapName("rightRear")
+            .strafeEncoder_HardwareMapName("rightFront")
+            .leftEncoderDirection(Encoder.FORWARD)
+            .rightEncoderDirection(Encoder.FORWARD)
+            .strafeEncoderDirection(Encoder.FORWARD)
+            .IMU_HardwareMapName("imu")
+            .IMU_Orientation(new RevHubOrientationOnRobot(RevHubOrientationOnRobot.LogoFacingDirection.UP, RevHubOrientationOnRobot.UsbFacingDirection.LEFT))
+            .forwardTicksToInches(1)
+            .strafeTicksToInches(1)
+            .turnTicksToInches(1);
+    public static FollowerConstants followerConstants = new FollowerConstants()
+            .mass(5)
+            .forwardZeroPowerAcceleration(1)
+            .lateralZeroPowerAcceleration(1);
     public static PathConstraints pathConstraints = new PathConstraints(0.99, 100, 1, 1);
-
-    // Drivetrain Physical Characteristics
-    public static double MASS = 1.0; // kg, placeholder
-    public static double WHEEL_RADIUS = 1.88976; // inches
-    public static double GEAR_RATIO = 1.0;
-    public static double TRACK_WIDTH = 15.5; // inches
-
-    // Tuning constants
-    public static double LATERAL_MULTIPLIER = 1.0;
 
     public static Follower createFollower(HardwareMap hardwareMap) {
         return new FollowerBuilder(followerConstants, hardwareMap)
                 .pathConstraints(pathConstraints)
+                .mecanumDrivetrain(driveConstants)
+                .threeWheelIMULocalizer(localizerConstants)
                 .build();
     }
 }
+
+/*
+.leftEncoderDirection(Encoder.REVERSE)
+.rightEncoderDirection(Encoder.FORWARD)
+// and/or:
+.strafeEncoderDirection(Encoder.REVERSE)
+ */

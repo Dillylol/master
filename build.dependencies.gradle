@@ -16,7 +16,7 @@ dependencies {
     implementation 'org.firstinspires.ftc:Hardware:11.0.0'
     implementation 'org.firstinspires.ftc:FtcCommon:11.0.0'
     implementation 'org.firstinspires.ftc:Vision:11.0.0'
-
+    implementation 'org.json:json:20231013'
     implementation 'androidx.appcompat:appcompat:1.6.1'
 
     // Exclude the duplicate Gson library from all third-party dependencies to resolve build conflicts.

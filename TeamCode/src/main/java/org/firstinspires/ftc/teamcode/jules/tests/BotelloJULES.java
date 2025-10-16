@@ -11,11 +11,7 @@ import com.qualcomm.robotcore.hardware.VoltageSensor;
 import org.firstinspires.ftc.robotcore.external.navigation.AngleUnit;
 import org.firstinspires.ftc.teamcode.jules.JulesBuilder;
 import org.firstinspires.ftc.teamcode.jules.JulesRamTx;
-import org.firstinspires.ftc.teamcode.jules.bridge.JulesBuffer;
-import org.firstinspires.ftc.teamcode.jules.bridge.JulesBufferJsonAdapter;
-import org.firstinspires.ftc.teamcode.jules.bridge.JulesHttpBridge;
-
-import java.io.IOException;
+import org.firstinspires.ftc.teamcode.jules.bridge.JulesBridgeManager;
 
 @TeleOp(name = "BotelloJULES")
 public class BotelloJULES extends OpMode {
@@ -25,8 +21,6 @@ public class BotelloJULES extends OpMode {
     private IMU imu;
 
     // Jules Telemetry using the new Builder
-    private JulesHttpBridge http;
-    private JulesRamTx julesTx;
     private JulesBuilder jules; // Our new data builder
 
     @Override
@@ -49,26 +43,22 @@ public class BotelloJULES extends OpMode {
                 RevHubOrientationOnRobot.LogoFacingDirection.RIGHT,
                 RevHubOrientationOnRobot.UsbFacingDirection.UP)));
 
-        // Jules initialization
-        try {
-            JulesBuffer buffer = new JulesBuffer(1000);
-            JulesBufferJsonAdapter adapter = new JulesBufferJsonAdapter(buffer);
-            http = new JulesHttpBridge(8080, adapter, adapter);
+        // --- CORRECTED JULES INITIALIZATION ---
+        // The JulesBridgeManager handles the web server and gives us the transmitter.
+        // We then pass that transmitter to our JulesBuilder.
+        // This replaces the manual setup and fixes the error.
+        JulesRamTx julesTx = JulesBridgeManager.init(this);
+        jules = new JulesBuilder(julesTx);
 
-            // Create the transmitter and then pass it to our new builder
-            julesTx = new JulesRamTx(1000, null, telemetry, "botello");
-            jules = new JulesBuilder(julesTx);
-
-            telemetry.addData("Jules", "HTTP Bridge running on port 8080 with JulesBuilder.");
-        } catch (IOException e) {
-            telemetry.addData("Jules", "Error starting HTTP bridge: " + e.getMessage());
-            http = null;
-        }
+        telemetry.addData("Jules", "JulesBridgeManager Initialized.");
         telemetry.update();
     }
 
     @Override
     public void loop() {
+        // Advertise the Jules server to the Driver Station
+        JulesBridgeManager.advertiseToDs(telemetry);
+
         // (Drive logic is the same as before)
         if (gamepad1.dpad_up) imu.resetYaw();
         double y  = -gamepad1.left_stick_y;
@@ -84,8 +74,7 @@ public class BotelloJULES extends OpMode {
         FrontR.setPower((rotY - rotX - rx) / denominator);
         BackR.setPower((rotY + rotX - rx) / denominator);
 
-        // --- Data Logging with JulesBuilder ---
-        // It's as easy as using addData() for anything you want to log.
+        // --- Data Logging with JulesBuilder (no changes needed here) ---
         if (jules != null) {
             jules.addData("gamepad_y", y)
                     .addData("gamepad_x", x)
@@ -99,7 +88,6 @@ public class BotelloJULES extends OpMode {
                     .addData("bl_power", BackL.getPower())
                     .addData("br_power", BackR.getPower());
 
-            // Send all the data collected since the last send() call.
             jules.send(getRuntime());
         }
 
@@ -107,7 +95,6 @@ public class BotelloJULES extends OpMode {
         telemetry.update();
     }
 
-    // (Helper functions getBatteryVoltage() and stop() are the same)
     private double getBatteryVoltage() {
         double min = Double.POSITIVE_INFINITY;
         for (VoltageSensor s : hardwareMap.getAll(VoltageSensor.class)) {
@@ -119,8 +106,8 @@ public class BotelloJULES extends OpMode {
 
     @Override
     public void stop() {
-        if (http != null) {
-            http.stop();
-        }
+        // --- CORRECTED JULES SHUTDOWN ---
+        // The manager handles stopping the web server.
+        JulesBridgeManager.stop();
     }
 }

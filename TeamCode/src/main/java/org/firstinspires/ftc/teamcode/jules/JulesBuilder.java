@@ -1,5 +1,3 @@
-// Create this new file at .../jules/JulesBuilder.java
-
 package org.firstinspires.ftc.teamcode.jules;
 
 import com.google.gson.Gson;
@@ -8,7 +6,7 @@ import java.util.Map;
 
 /**
  * A helper class to build and send dynamic key-value data through the Jules system.
- * This provides a similar interface to PanelsTelemetry.
+ * This provides a similar interface to FTCLib's Panels telemetry.
  */
 public class JulesBuilder {
 

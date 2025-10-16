@@ -56,10 +56,7 @@ public class BotelloJULES extends OpMode {
 
     @Override
     public void loop() {
-        // Advertise the Jules server to the Driver Station
-        JulesBridgeManager.advertiseToDs(telemetry);
-
-        // (Drive logic is the same as before)
+        // (Your existing drive logic remains the same)
         if (gamepad1.dpad_up) imu.resetYaw();
         double y  = -gamepad1.left_stick_y;
         double x  =  gamepad1.left_stick_x;
@@ -74,7 +71,7 @@ public class BotelloJULES extends OpMode {
         FrontR.setPower((rotY - rotX - rx) / denominator);
         BackR.setPower((rotY + rotX - rx) / denominator);
 
-        // --- Data Logging with JulesBuilder (no changes needed here) ---
+        // --- Data Logging with JulesBuilder ---
         if (jules != null) {
             jules.addData("gamepad_y", y)
                     .addData("gamepad_x", x)
@@ -88,6 +85,7 @@ public class BotelloJULES extends OpMode {
                     .addData("bl_power", BackL.getPower())
                     .addData("br_power", BackR.getPower());
 
+            // Send all the data collected since the last send() call.
             jules.send(getRuntime());
         }
 
@@ -102,12 +100,5 @@ public class BotelloJULES extends OpMode {
             if (v > 0) min = Math.min(min, v);
         }
         return (min == Double.POSITIVE_INFINITY) ? 0.0 : min;
-    }
-
-    @Override
-    public void stop() {
-        // --- CORRECTED JULES SHUTDOWN ---
-        // The manager handles stopping the web server.
-        JulesBridgeManager.stop();
     }
 }

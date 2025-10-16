@@ -10,8 +10,7 @@ import com.qualcomm.robotcore.hardware.IMU;
 import com.qualcomm.robotcore.hardware.VoltageSensor;
 import org.firstinspires.ftc.robotcore.external.navigation.AngleUnit;
 import org.firstinspires.ftc.teamcode.jules.JulesBuilder;
-import org.firstinspires.ftc.teamcode.jules.JulesRamTx;
-import org.firstinspires.ftc.teamcode.jules.bridge.JulesBridgeManager;
+import org.firstinspires.ftc.teamcode.jules.JulesService; // Import the service
 
 @TeleOp(name = "BotelloJULES")
 public class BotelloJULES extends OpMode {
@@ -20,12 +19,12 @@ public class BotelloJULES extends OpMode {
     private DcMotorEx Intake, Wheel;
     private IMU imu;
 
-    // Jules Telemetry using the new Builder
-    private JulesBuilder jules; // Our new data builder
+    // This will hold the global JulesBuilder instance
+    private JulesBuilder jules;
 
     @Override
     public void init() {
-        // (Hardware mapping and motor setup is the same as before)
+        // Hardware mapping (unchanged)
         BackL  = hardwareMap.get(DcMotor.class,   "BackL");
         BackR  = hardwareMap.get(DcMotor.class,   "BackR");
         FrontL = hardwareMap.get(DcMotor.class,   "FrontL");
@@ -43,20 +42,17 @@ public class BotelloJULES extends OpMode {
                 RevHubOrientationOnRobot.LogoFacingDirection.RIGHT,
                 RevHubOrientationOnRobot.UsbFacingDirection.UP)));
 
-        // --- CORRECTED JULES INITIALIZATION ---
-        // The JulesBridgeManager handles the web server and gives us the transmitter.
-        // We then pass that transmitter to our JulesBuilder.
-        // This replaces the manual setup and fixes the error.
-        JulesRamTx julesTx = JulesBridgeManager.init(this);
-        jules = new JulesBuilder(julesTx);
+        // --- FINAL JULES INITIALIZATION ---
+        // Get the globally managed JulesBuilder instance from our service.
+        jules = JulesService.getJules();
 
-        telemetry.addData("Jules", "JulesBridgeManager Initialized.");
+        telemetry.addData("Jules", "Service connected. Builder is ready.");
         telemetry.update();
     }
 
     @Override
     public void loop() {
-        // (Your existing drive logic remains the same)
+        // Drive logic (unchanged)
         if (gamepad1.dpad_up) imu.resetYaw();
         double y  = -gamepad1.left_stick_y;
         double x  =  gamepad1.left_stick_x;
@@ -71,7 +67,7 @@ public class BotelloJULES extends OpMode {
         FrontR.setPower((rotY - rotX - rx) / denominator);
         BackR.setPower((rotY + rotX - rx) / denominator);
 
-        // --- Data Logging with JulesBuilder ---
+        // Data Logging with JulesBuilder (unchanged)
         if (jules != null) {
             jules.addData("gamepad_y", y)
                     .addData("gamepad_x", x)
@@ -85,7 +81,6 @@ public class BotelloJULES extends OpMode {
                     .addData("bl_power", BackL.getPower())
                     .addData("br_power", BackR.getPower());
 
-            // Send all the data collected since the last send() call.
             jules.send(getRuntime());
         }
 

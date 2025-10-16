@@ -5,6 +5,8 @@ repositories {
     maven { url = "https://mymaven.bylazar.com/releases" }
 }
 
+// build.dependencies.gradle
+
 dependencies {
     implementation 'org.firstinspires.ftc:Inspection:11.0.0'
     implementation 'org.firstinspires.ftc:Blocks:11.0.0'
@@ -15,19 +17,34 @@ dependencies {
     implementation 'org.firstinspires.ftc:FtcCommon:11.0.0'
     implementation 'org.firstinspires.ftc:Vision:11.0.0'
 
-    // AndroidX Libraries
     implementation 'androidx.appcompat:appcompat:1.6.1'
 
-    // Third-Party Libraries
-    implementation 'com.google.code.gson:gson:2.10.1'
-    implementation 'com.pedropathing:ftc:2.0.2'
-    implementation 'com.pedropathing:telemetry:1.0.0'
-    implementation 'com.bylazar:gamepad:1.0.3'
-    implementation 'com.bylazar:fullpanels:1.0.6'
-    implementation 'com.bylazar:docs:1.0.4'
-    implementation 'com.bylazar:telemetry:1.0.3'
-    implementation "com.bylazar:battery:1.0.2"
-    implementation "com.bylazar:graph:1.0.3"
-
+    // Exclude the duplicate Gson library from all third-party dependencies to resolve build conflicts.
+    implementation('com.bylazar:gamepad:1.0.3') {
+        exclude group: 'com.google.code.gson', module: 'gson'
+    }
+    implementation('com.pedropathing:ftc:2.0.2') {
+        exclude group: 'com.google.code.gson', module: 'gson'
+    }
+    implementation('com.pedropathing:telemetry:1.0.0') {
+        exclude group: 'com.google.code.gson', module: 'gson'
+    }
+    implementation('com.bylazar:fullpanels:1.0.6') {
+        exclude group: 'com.google.code.gson', module: 'gson'
+    }
+    implementation('com.bylazar:docs:1.0.4') {
+        exclude group: 'com.google.code.gson', module: 'gson'
+    }
+    implementation('com.bylazar:telemetry:1.0.3') {
+        exclude group: 'com.google.code.gson', module: 'gson'
+    }
+    implementation("com.bylazar:battery:1.0.2") {
+        exclude group: 'com.google.code.gson', module: 'gson'
+    }
+    implementation("com.bylazar:graph:1.0.3") {
+        exclude group: 'com.google.code.gson', module: 'gson'
+    }
 }
+
+
 

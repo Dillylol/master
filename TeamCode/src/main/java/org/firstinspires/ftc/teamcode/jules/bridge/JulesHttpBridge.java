@@ -160,6 +160,18 @@ public class JulesHttpBridge extends NanoHTTPD implements AutoCloseable {
                 return json(OK, "{\"ok\":true}");
             }
 
+            if ("/jules/command".equals(uri)) {
+                if (method != Method.POST) {
+                    return json(METHOD_NOT_ALLOWED, "{\"ok\":false,\"error\":\"method not allowed, use POST\"}");
+                }
+                String commandText = params.get("command");
+                if (commandText == null || commandText.trim().isEmpty()) {
+                    return json(BAD_REQUEST, "{\"ok\":false,\"error\":\"missing 'command' parameter\"}");
+                }
+                JulesCommand.setCommand(commandText); // Set the static command
+                return json(OK, "{\"ok\":true, \"command_sent\":\"" + escape(commandText) + "\"}");
+            }
+
             // Live stream (SSE)
             if ("/jules/stream".equals(uri)) {
                 if (method != Method.GET) {

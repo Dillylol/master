@@ -2,36 +2,25 @@
 package org.firstinspires.ftc.teamcode.jules.bridge;
 
 public class JulesCommand {
-    public enum Command {
-        IDLE,
-        MANUAL_DRIVE_TEST,
-        FEEDFORWARD_TEST
+
+    private static volatile String currentCommand = null;
+
+    /**
+     * Sets the next command to be executed. This is called by the HTTP bridge.
+     * @param command The full command string (e.g., "DRIVE_FORWARD_2T_0.5V").
+     */
+    public static synchronized void setCommand(String command) {
+        currentCommand = command;
     }
 
-    private static volatile Command currentCommand = Command.IDLE;
-    private static final String[] commandNames;
-
-    static {
-        Command[] commands = Command.values();
-        commandNames = new String[commands.length];
-        for (int i = 0; i < commands.length; i++) {
-            commandNames[i] = commands[i].name();
-        }
-    }
-
-    public static String[] getCommandNames() {
-        return commandNames;
-    }
-
-    public static void setCommand(String commandName) {
-        try {
-            currentCommand = Command.valueOf(commandName);
-        } catch (IllegalArgumentException e) {
-            currentCommand = Command.IDLE;
-        }
-    }
-
-    public static Command getCommand() {
-        return currentCommand;
+    /**
+     * Gets the current command and immediately clears it to prevent re-execution.
+     * This is called by the JulesDevController OpMode.
+     * @return The command string, or null if no new command is present.
+     */
+    public static synchronized String getAndClearCommand() {
+        String commandToReturn = currentCommand;
+        currentCommand = null; // Clear the command after it's been retrieved
+        return commandToReturn;
     }
 }

@@ -28,13 +28,13 @@ import java.util.regex.Pattern;
  * and executes simple motion commands coming from the client.
  *
  * Expected commands (case-insensitive):
- *  - DRIVE_FORWARD_<seconds>T_<power>P
- *  - DRIVE_BACKWARD_<seconds>T_<power>P
- *  - STRAFE_LEFT_<seconds>T_<power>P
- *  - STRAFE_RIGHT_<seconds>T_<power>P
- *  - TURN_LEFT_<seconds>T_<power>P
- *  - TURN_RIGHT_<seconds>T_<power>P
- *  - STOP
+ * - DRIVE_FORWARD_<seconds>T_<power>P
+ * - DRIVE_BACKWARD_<seconds>T_<power>P
+ * - STRAFE_LEFT_<seconds>T_<power>P
+ * - STRAFE_RIGHT_<seconds>T_<power>P
+ * - TURN_LEFT_<seconds>T_<power>P
+ * - TURN_RIGHT_<seconds>T_<power>P
+ * - STOP
  */
 @TeleOp(name = "JULES: Dev Controller", group = "Jules")
 public class JulesDevController extends LinearOpMode {
@@ -67,7 +67,7 @@ public class JulesDevController extends LinearOpMode {
         setupHardware();
         setupJules();
 
-        var status = bridgeManager.getStatusSnapshot();
+        JulesBridgeManager.Status status = bridgeManager.getStatusSnapshot();
         telemetry.addLine("✅ JULES Dev Controller Initialized");
         telemetry.addLine(status != null ? status.advertiseLine : "JULES: stopped");
         telemetry.addLine("\nReady to receive client commands.");
@@ -128,7 +128,6 @@ public class JulesDevController extends LinearOpMode {
         } else if (upper.startsWith("TURN_RIGHT")) {
             executeMovement(duration, 0, 0, mag, command, bus);
         } else if (upper.startsWith("STOP")) {
-            follower.setTeleOpDrive(0, 0, 0, true);
             telemetry.addData("Command", "STOP");
             telemetry.update();
         } else {

@@ -6,7 +6,7 @@ import com.bylazar.telemetry.TelemetryManager;
 
 import org.firstinspires.ftc.robotcore.external.Telemetry;
 import org.firstinspires.ftc.teamcode.jules.bridge.JulesBridgeManager;
-import org.firstinspires.ftc.teamcode.jules.bridge.JulesRamTx;
+import org.firstinspires.ftc.teamcode.jules.JulesRamTx;
 
 /**
  * Compatibility façade that delegates to {@link JulesBridgeManager}.

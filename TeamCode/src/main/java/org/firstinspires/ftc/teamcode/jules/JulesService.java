@@ -14,6 +14,8 @@ import org.firstinspires.ftc.teamcode.jules.bridge.JulesTokenStore;
 import org.firstinspires.ftc.robotcore.external.Telemetry;
 import org.firstinspires.ftc.teamcode.jules.bridge.JulesBridgeManager;
 
+import java.io.IOException;
+
 /**
  * Central lifecycle manager for the persistent JULES data bridge.
  *

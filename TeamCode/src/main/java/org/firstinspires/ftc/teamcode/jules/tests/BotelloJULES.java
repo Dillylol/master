@@ -12,6 +12,7 @@ import com.qualcomm.robotcore.hardware.VoltageSensor;
 import org.firstinspires.ftc.robotcore.external.navigation.AngleUnit;
 import org.firstinspires.ftc.teamcode.jules.JulesBuilder;
 import org.firstinspires.ftc.teamcode.jules.JulesService;
+import org.firstinspires.ftc.teamcode.jules.bridge.JulesBridgeManager;
 
 @TeleOp(name = "BotelloJULES")
 public class BotelloJULES extends OpMode {

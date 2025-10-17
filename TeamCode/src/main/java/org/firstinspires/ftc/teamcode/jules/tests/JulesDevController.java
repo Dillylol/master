@@ -8,18 +8,14 @@ import com.qualcomm.robotcore.hardware.VoltageSensor;
 import com.qualcomm.robotcore.util.ElapsedTime;
 
 import org.firstinspires.ftc.teamcode.jules.Metrics;
-import org.firstinspires.ftc.teamcode.jules.bridge.JulesBuffer;
-import org.firstinspires.ftc.teamcode.jules.bridge.JulesBufferJsonAdapter;
 import org.firstinspires.ftc.teamcode.jules.bridge.JulesCommand;
-import org.firstinspires.ftc.teamcode.jules.bridge.JulesHttpBridge;
+import org.firstinspires.ftc.teamcode.jules.bridge.JulesBridgeManager;
 import org.firstinspires.ftc.teamcode.jules.bridge.JulesMetricsHttpAdapter;
 import org.firstinspires.ftc.teamcode.jules.bridge.JulesStreamBus;
-import org.firstinspires.ftc.teamcode.jules.bridge.JulesTokenStore;
 import org.firstinspires.ftc.teamcode.pedroPathing.Constants;
 import com.pedropathing.follower.Follower;
 import org.firstinspires.ftc.teamcode.jules.JulesTap;
 
-import java.io.IOException;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
@@ -44,8 +40,7 @@ public class JulesDevController extends LinearOpMode {
     );
 
     // JULES Components
-    private JulesHttpBridge http;
-    private JulesStreamBus streamBus;
+    private JulesBridgeManager bridgeManager;
     private JulesTap tap;
 
     // Robot Hardware & Control
@@ -59,10 +54,10 @@ public class JulesDevController extends LinearOpMode {
         setupHardware();
         setupJules();
 
+        JulesBridgeManager.Status status = bridgeManager.getStatusSnapshot();
+
         telemetry.addLine("✅ JULES Dev Controller Initialized");
-        if (http != null) {
-            telemetry.addLine(http.advertiseLine());
-        }
+        telemetry.addLine(status.advertiseLine);
         telemetry.addLine("\nReady to receive client commands.");
         telemetry.addLine("Supported commands:");
         for (String cmd : COMMAND_REFERENCE) {
@@ -79,6 +74,9 @@ public class JulesDevController extends LinearOpMode {
             // CRITICAL: follower.update() must be called every loop to update odometry
             follower.update();
 
+            // Refresh stream bus reference in case the bridge toggled.
+            JulesStreamBus streamBus = bridgeManager.getStreamBus();
+
             // Get the latest command from the client. This also clears it.
             String command = JulesCommand.getAndClearCommand();
 
@@ -86,7 +84,7 @@ public class JulesDevController extends LinearOpMode {
                 telemetry.addData("Received Command", command);
                 telemetry.update();
 
-                parseAndExecute(command); // Execute the command
+                parseAndExecute(command, streamBus); // Execute the command
 
                 // Ensure the robot is stopped after the command finishes
                 follower.setTeleOpDrive(0, 0, 0, true);
@@ -97,9 +95,6 @@ public class JulesDevController extends LinearOpMode {
 
             sleep(50); // Poll for commands at 20Hz
         }
-
-        // Cleanup
-        if (http != null) http.close();
     }
 
     /**
@@ -148,13 +143,16 @@ public class JulesDevController extends LinearOpMode {
     /**
      * Executes a teleop-style movement for a specified duration while streaming data.
      */
-    private void executeMovement(double duration, double y, double x, double r, String label) {
+    private void executeMovement(double duration, double y, double x, double r, String label, JulesStreamBus bus) {
         ElapsedTime timer = new ElapsedTime();
         double lastEmit = 0;
         final double PERIOD_S = 0.02; // 50 Hz data streaming rate
 
-        // Add a label to the data stream to mark the start of the test
-        streamBus.publishJsonLine(String.format("{\"label\":\"START: %s\"}", label));
+        boolean startLabelSent = false;
+        if (bus != null) {
+            bus.publishJsonLine(String.format("{\"label\":\"START: %s\"}", label));
+            startLabelSent = true;
+        }
 
         while (opModeIsActive() && timer.seconds() < duration) {
             // Keep odometry and robot state updated
@@ -172,7 +170,15 @@ public class JulesDevController extends LinearOpMode {
             if (now - lastEmit >= PERIOD_S) {
                 lastEmit = now;
                 Metrics m = tap.sample(imu, follower);
-                streamBus.publishJsonLine(JulesMetricsHttpAdapter.encodePublic(m));
+                JulesStreamBus currentBus = bus != null ? bus : bridgeManager.getStreamBus();
+                if (currentBus != null) {
+                    if (!startLabelSent) {
+                        currentBus.publishJsonLine(String.format("{\"label\":\"START: %s\"}", label));
+                        startLabelSent = true;
+                    }
+                    currentBus.publishJsonLine(JulesMetricsHttpAdapter.encodePublic(m));
+                    bus = currentBus;
+                }
             }
 
             telemetry.addData("Executing", "%s", label);
@@ -181,7 +187,10 @@ public class JulesDevController extends LinearOpMode {
         }
 
         // Add a label to mark the end of the test
-        streamBus.publishJsonLine(String.format("{\"label\":\"END: %s\"}", label));
+        JulesStreamBus endBus = bus != null ? bus : bridgeManager.getStreamBus();
+        if (startLabelSent && endBus != null) {
+            endBus.publishJsonLine(String.format("{\"label\":\"END: %s\"}", label));
+        }
     }
 
     /**
@@ -210,17 +219,8 @@ public class JulesDevController extends LinearOpMode {
     // --- Helper methods for initialization ---
 
     private void setupJules() {
-        JulesBuffer buffer = new JulesBuffer(8192);
-        streamBus = new JulesStreamBus();
-        JulesBufferJsonAdapter adapter = new JulesBufferJsonAdapter(buffer);
-        String token = JulesTokenStore.getOrCreate(hardwareMap.appContext);
-
-        try {
-            http = new JulesHttpBridge(58080, adapter, adapter, token, streamBus);
-        } catch (IOException e) {
-            telemetry.addData("JULES FATAL", "Could not start HTTP bridge: " + e.getMessage());
-            http = null;
-        }
+        bridgeManager = JulesBridgeManager.getInstance();
+        bridgeManager.prepare(hardwareMap.appContext);
     }
 
     private void setupHardware() {

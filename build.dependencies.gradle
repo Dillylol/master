@@ -18,6 +18,13 @@ dependencies {
     implementation 'org.firstinspires.ftc:Vision:11.0.0'
     implementation 'org.json:json:20231013'
     implementation 'androidx.appcompat:appcompat:1.6.1'
+    implementation 'com.bylazar:gamepad:1.0.3'
+    // --- CORRECTED LINE ---
+    implementation 'com.pedropathing:ftc:2.0.2' // Was 2.2.0, now corrected to 2.0.2
+    implementation 'com.pedropathing:telemetry:1.0.0'
+    implementation 'com.bylazar:fullpanels:1.0.6'
+    implementation 'com.bylazar:docs:1.0.4'
+    implementation 'com.bylazar:telemetry:1.0.3'
 
     // Exclude the duplicate Gson library from all third-party dependencies to resolve build conflicts.
     implementation('com.bylazar:gamepad:1.0.3') {

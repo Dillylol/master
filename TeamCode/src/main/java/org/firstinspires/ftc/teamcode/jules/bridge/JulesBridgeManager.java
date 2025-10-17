@@ -7,7 +7,7 @@ import com.bylazar.telemetry.TelemetryManager;
 import org.firstinspires.ftc.robotcore.external.Telemetry;
 import org.firstinspires.ftc.teamcode.jules.JulesBuilder;
 import org.firstinspires.ftc.teamcode.jules.JulesRamTx;
-
+import org.firstinspires.ftc.teamcode.jules.opmode.JulesBridgeSwitch;
 import java.io.IOException;
 import java.util.List;
 import java.util.Locale;

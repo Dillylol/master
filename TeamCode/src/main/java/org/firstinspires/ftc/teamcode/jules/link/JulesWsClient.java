@@ -5,8 +5,10 @@ import android.util.Log;
 import com.google.gson.Gson;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
-import com.google.gson.JsonParser;
 import com.qualcomm.robotcore.util.RobotLog;
+import java.util.Map;
+import org.firstinspires.ftc.teamcode.jules.bridge.util.GsonCompat; // if you haven’t added it yet
+
 
 import java.util.Queue;
 import java.util.concurrent.ConcurrentLinkedQueue;
@@ -217,14 +219,13 @@ public class JulesWsClient {
             return;
         }
         try {
-            JsonObject obj = JsonParser.parseString(text).getAsJsonObject();
+            JsonObject obj = GsonCompat.parse(text).getAsJsonObject();
             String type = obj.has("type") ? obj.get("type").getAsString() : "";
             if ("ping".equals(type)) {
                 JsonObject pong = new JsonObject();
-                for (String key : obj.keySet()) {
-                    JsonElement val = obj.get(key);
-                    if (val != null) {
-                        pong.add(key, val);
+                for (Map.Entry<String, JsonElement> e : obj.entrySet()) {
+                    if (e.getValue() != null) {
+                        pong.add(e.getKey(), e.getValue());
                     }
                 }
                 pong.addProperty("type", "pong");

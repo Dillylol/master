@@ -7,17 +7,23 @@ import static fi.iki.elonen.NanoHTTPD.Response.Status.NOT_FOUND;
 import static fi.iki.elonen.NanoHTTPD.Response.Status.OK;
 import static fi.iki.elonen.NanoHTTPD.Response.Status.UNAUTHORIZED;
 
+import org.firstinspires.ftc.teamcode.jules.bridge.util.GsonCompat;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
-import com.google.gson.JsonParser;
 import com.google.gson.JsonSyntaxException;
 
-import fi.iki.elonen.NanoHTTPD;
+import fi.iki.elonen.NanoHTTPD;                   // base HTTP server (provided by RobotCore)
 import fi.iki.elonen.NanoHTTPD.IHTTPSession;
-import fi.iki.elonen.NanoWSD;
+import fi.iki.elonen.NanoHTTPD.Response;
+import fi.iki.elonen.NanoHTTPD.Method;
+import fi.iki.elonen.NanoWSD;                      // WebSocket server (from nanohttpd-websocket)
 import fi.iki.elonen.NanoWSD.WebSocket;
 import fi.iki.elonen.NanoWSD.WebSocketFrame;
 import fi.iki.elonen.NanoWSD.WebSocketFrame.CloseCode;
+
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
 import java.io.IOException;
 import java.net.Inet4Address;
@@ -42,13 +48,14 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * JULES HTTP Bridge (NanoHTTPD)
+ * JULES HTTP Bridge (NanoHTTPD + NanoWSD)
  *
  * Routes:
- *   GET  /jules/handshake            -> { ok, token, time }     (no token required)
- *   GET  /jules/dump[?since=ms]      -> application/jsonl       (requires token)
- *   POST /jules/label?text=...&t=ms  -> { ok }                  (requires token)
- *   GET  /jules/stream               -> Server-Sent Events      (requires token)
+ *   GET  /jules/handshake            -> { ok, token, time }
+ *   GET  /jules/dump[?since=ms]      -> application/jsonl
+ *   POST /jules/label?text=...&t=ms  -> { ok }
+ *   GET  /jules/stream               -> Server-Sent Events (SSE)
+ *   WS   /jules/stream               -> WebSocket (text frames)
  *
  * Token is accepted as header "X-Jules-Token: <token>" OR query "?token=<token>".
  * Start in OpMode.init(), advertise in loop(), close in stop().
@@ -92,7 +99,8 @@ public class JulesHttpBridge extends NanoWSD implements AutoCloseable {
         this.labeler = labeler;
         this.token = (tokenOverride != null) ? tokenOverride : generateToken();
         this.streamBus = streamBus;
-        start(NanoHTTPD.SOCKET_READ_TIMEOUT, false);
+        // Use 0 timeout so RobotCore's event loop isn't blocked by lingering sockets
+        start(0, false);
     }
 
     public String getToken()     { return token; }
@@ -207,6 +215,7 @@ public class JulesHttpBridge extends NanoWSD implements AutoCloseable {
                 return json(OK, response.toString());
             }
 
+            // Command (HTTP)
             if ("/jules/command".equals(uri)) {
                 if (method != Method.POST) {
                     return json(METHOD_NOT_ALLOWED, "{\"ok\":false,\"error\":\"method not allowed, use POST\"}");
@@ -227,7 +236,7 @@ public class JulesHttpBridge extends NanoWSD implements AutoCloseable {
                 return json(OK, response.toString());
             }
 
-            // Live stream (SSE)
+            // Live stream (SSE over HTTP). WebSocket upgrades are handled in openWebSocket().
             if ("/jules/stream".equals(uri)) {
                 if (method != Method.GET) {
                     return json(METHOD_NOT_ALLOWED, "{\"ok\":false,\"error\":\"method\"}");
@@ -242,7 +251,7 @@ public class JulesHttpBridge extends NanoWSD implements AutoCloseable {
 
                     Thread t = new Thread(() -> {
                         final java.io.OutputStreamWriter w = new java.io.OutputStreamWriter(pos);
-                        final long heartbeatMs = 5000; 
+                        final long heartbeatMs = 5000;
                         long lastBeat = System.currentTimeMillis();
                         try {
                             w.write(":\n\n"); w.flush();
@@ -277,8 +286,6 @@ public class JulesHttpBridge extends NanoWSD implements AutoCloseable {
                 }
             }
 
-            // Requests that upgrade to WebSocket are handled by NanoWSD#serve
-
             // 404
             return json(NOT_FOUND, "{\"ok\":false,\"error\":\"not found\"}");
         } catch (Exception e) {
@@ -293,45 +300,53 @@ public class JulesHttpBridge extends NanoWSD implements AutoCloseable {
     }
 
     private final class BridgeWebSocket extends WebSocket {
-
         private JulesStreamBus.Subscription subscription;
         private Thread pumpThread;
+        private ScheduledExecutorService pinger;  // per-connection keepalive
 
-        private BridgeWebSocket(IHTTPSession handshakeRequest) {
-            super(handshakeRequest);
-        }
+        private BridgeWebSocket(IHTTPSession handshakeRequest) { super(handshakeRequest); }
 
         @Override
         protected void onOpen() {
             IHTTPSession request = getHandshakeRequest();
             if (!authorized(request.getParms(), request.getHeaders())) {
-                try {
-                    close(CloseCode.PolicyViolation, "unauthorized", false);
-                } catch (IOException ignored) { }
+                try { close(CloseCode.PolicyViolation, "unauthorized", false); } catch (IOException ignored) {}
                 return;
             }
             if (streamBus == null) {
                 sendErrorFrame("stream_unavailable", "stream not enabled", null);
                 try {
-                    close(CloseCode.UnexpectedCondition, "stream not enabled", false);
-                } catch (IOException ignored) { }
+                    // Use any CloseCode your NanoWSD supports; fallback shown below
+                    close(CloseCode.InternalServerError, "stream not enabled", false);
+                    // close(CloseCode.AbnormalClosure, "stream not enabled", false);
+                } catch (IOException ignored) {}
                 return;
             }
 
             subscription = streamBus.subscribe();
-            pumpThread = new Thread(this::pump, "JulesWsPump" + hashCode());
+
+            pumpThread = new Thread(this::pump, "JulesWsPump" + System.identityHashCode(this));
             pumpThread.setDaemon(true);
             pumpThread.start();
+
             sendAnnounceFrame();
+
+            // --- keep the socket warm so we don't hit idle read timeouts ---
+            pinger = Executors.newSingleThreadScheduledExecutor(r -> {
+                Thread t = new Thread(r, "JulesWsPing");
+                t.setDaemon(true);
+                return t;
+            });
+            pinger.scheduleAtFixedRate(() -> {
+                try { ping(new byte[0]); } catch (Exception ignored) {}
+            }, 10, 10, TimeUnit.SECONDS);
         }
 
         private void pump() {
             try {
                 while (true) {
-                    String line = subscription != null ? subscription.take() : null;
-                    if (line == null) {
-                        break;
-                    }
+                    String line = (subscription != null) ? subscription.take() : null;
+                    if (line == null) break;
                     safeSend(line);
                 }
             } catch (InterruptedException ignored) {
@@ -348,16 +363,13 @@ public class JulesHttpBridge extends NanoWSD implements AutoCloseable {
         }
 
         private void handleIncoming(String payload) {
-            if (payload == null) {
-                return;
-            }
+            if (payload == null) return;
             String trimmed = payload.trim();
-            if (trimmed.isEmpty()) {
-                return;
-            }
+            if (trimmed.isEmpty()) return;
+
             JsonObject obj;
             try {
-                JsonElement parsed = JsonParser.parseString(trimmed);
+                JsonElement parsed = GsonCompat.parse(trimmed);
                 if (!parsed.isJsonObject()) {
                     sendErrorFrame("bad_payload", "expected object", null);
                     return;
@@ -392,9 +404,7 @@ public class JulesHttpBridge extends NanoWSD implements AutoCloseable {
 
         private void handleCommandFrame(JsonObject obj) {
             String text = optString(obj, "text");
-            if (text == null) {
-                text = optString(obj, "command");
-            }
+            if (text == null) text = optString(obj, "command");
             if (text == null || text.trim().isEmpty()) {
                 sendErrorFrame("missing_command", "command text missing", obj);
                 return;
@@ -427,12 +437,8 @@ public class JulesHttpBridge extends NanoWSD implements AutoCloseable {
             JsonObject pong = new JsonObject();
             pong.addProperty("type", "pong");
             pong.addProperty("ts_ms", now);
-            if (obj.has("id")) {
-                pong.add("id", obj.get("id"));
-            }
-            if (obj.has("t0")) {
-                pong.add("t0", obj.get("t0"));
-            }
+            if (obj.has("id")) pong.add("id", obj.get("id"));
+            if (obj.has("t0")) pong.add("t0", obj.get("t0"));
             pong.addProperty("t1", now);
             safeSend(pong.toString());
         }
@@ -455,16 +461,10 @@ public class JulesHttpBridge extends NanoWSD implements AutoCloseable {
             ack.addProperty("action", action);
             ack.addProperty("ts_ms", System.currentTimeMillis());
             ack.addProperty("command_ts_ms", ts);
-            if (text != null) {
-                ack.addProperty("text", text);
-            }
+            if (text != null) ack.addProperty("text", text);
             if (request != null) {
-                if (request.has("id")) {
-                    ack.add("id", request.get("id"));
-                }
-                if (request.has("t0")) {
-                    ack.add("t0", request.get("t0"));
-                }
+                if (request.has("id")) ack.add("id", request.get("id"));
+                if (request.has("t0")) ack.add("t0", request.get("t0"));
             }
             safeSend(ack.toString());
         }
@@ -473,41 +473,24 @@ public class JulesHttpBridge extends NanoWSD implements AutoCloseable {
             JsonObject error = new JsonObject();
             error.addProperty("type", "error");
             error.addProperty("code", code);
-            if (message != null) {
-                error.addProperty("message", message);
-            }
+            if (message != null) error.addProperty("message", message);
             error.addProperty("ts_ms", System.currentTimeMillis());
-            if (request != null && request.has("id")) {
-                error.add("id", request.get("id"));
-            }
+            if (request != null && request.has("id")) error.add("id", request.get("id"));
             safeSend(error.toString());
         }
 
-        private void safeSend(String text) {
-            try {
-                send(text);
-            } catch (IOException ignored) { }
-        }
+        private void safeSend(String text) { try { send(text); } catch (IOException ignored) {} }
 
         @Override
         protected void onClose(CloseCode code, String reason, boolean initiatedByRemote) {
-            if (subscription != null) {
-                subscription.close();
-                subscription = null;
-            }
-            if (pumpThread != null) {
-                pumpThread.interrupt();
-                pumpThread = null;
-            }
+            if (subscription != null) { subscription.close(); subscription = null; }
+            if (pumpThread != null) { pumpThread.interrupt(); pumpThread = null; }
+            if (pinger != null) { pinger.shutdownNow(); pinger = null; }
         }
 
-        @Override
-        protected void onPong(WebSocketFrame pong) {
-            // ignored
-        }
-
-        @Override
-        protected void onException(IOException exception) {
+        @Override protected void onPong(WebSocketFrame pong) { /* ignored */ }
+        @Override protected void onException(IOException exception) {
+            if (pinger != null) { pinger.shutdownNow(); pinger = null; }
             sendErrorFrame("io_exception", exception.getMessage(), null);
         }
     }
@@ -521,68 +504,44 @@ public class JulesHttpBridge extends NanoWSD implements AutoCloseable {
     // ------------------------- Helpers -------------------------
 
     private static String optString(JsonObject obj, String key) {
-        if (obj == null || key == null || !obj.has(key)) {
-            return null;
-        }
+        if (obj == null || key == null || !obj.has(key)) return null;
         JsonElement element = obj.get(key);
-        if (element == null || element.isJsonNull()) {
-            return null;
-        }
-        try {
-            return element.getAsString();
-        } catch (ClassCastException | IllegalStateException ignored) {
-            return null;
-        }
+        if (element == null || element.isJsonNull()) return null;
+        try { return element.getAsString(); } catch (ClassCastException | IllegalStateException ignored) { return null; }
     }
 
     private void publishCommandEvent(String command, long timestampMs, String source) {
-        if (streamBus == null || command == null || command.isEmpty()) {
-            return;
-        }
+        if (streamBus == null || command == null || command.isEmpty()) return;
         JsonObject event = new JsonObject();
         event.addProperty("type", "cmd");
         event.addProperty("ts_ms", timestampMs);
         event.addProperty("text", command);
-        if (source != null && !source.isEmpty()) {
-            event.addProperty("source", source);
-        }
+        if (source != null && !source.isEmpty()) event.addProperty("source", source);
         streamBus.publishJsonLine(event.toString());
     }
 
     private void publishLabelEvent(String text, long timestampMs, String source) {
-        if (streamBus == null || text == null || text.isEmpty()) {
-            return;
-        }
+        if (streamBus == null || text == null || text.isEmpty()) return;
         JsonObject event = new JsonObject();
         event.addProperty("type", "label");
         event.addProperty("ts_ms", timestampMs);
         event.addProperty("text", text);
-        if (source != null && !source.isEmpty()) {
-            event.addProperty("source", source);
-        }
+        if (source != null && !source.isEmpty()) event.addProperty("source", source);
         streamBus.publishJsonLine(event.toString());
     }
 
     private boolean authorized(Map<String,String> params, Map<String,String> headers) {
-        if (token == null || token.isEmpty()) {
-            return true;
-        }
+        if (token == null || token.isEmpty()) return true;
         String q = params.get("token");
-        if (token.equals(q)) {
-            return true;
-        }
+        if (token.equals(q)) return true;
         String headerToken = headers.get("x-jules-token");
-        if (token.equals(headerToken)) {
-            return true;
-        }
+        if (token.equals(headerToken)) return true;
         String auth = headers.get("authorization");
         if (auth != null) {
             String normalized = auth.trim();
             if (normalized.regionMatches(true, 0, "Bearer ", 0, 7)) {
                 String bearer = normalized.substring(7).trim();
-                if (token.equals(bearer)) {
-                    return true;
-                }
+                if (token.equals(bearer)) return true;
             }
         }
         return false;
@@ -617,54 +576,36 @@ public class JulesHttpBridge extends NanoWSD implements AutoCloseable {
 
     /** Build a Dumper from a supplier of an iterator of JSONL lines. */
     public static Dumper dumperFrom(Supplier<Iterator<String>> allSupplier) {
-        return new Dumper() {
-            @Override public Iterator<String> dumpAll() { return allSupplier.get(); }
-        };
+        return new Dumper() { @Override public Iterator<String> dumpAll() { return allSupplier.get(); } };
     }
 
     private static final Pattern JSON_COMMAND_PATTERN = Pattern.compile("\\\"command\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"");
 
     private static String extractCommandFromBody(String body) {
-        if (body == null) {
-            return null;
-        }
-
+        if (body == null) return null;
         String trimmed = body.trim();
-        if (trimmed.isEmpty()) {
-            return null;
-        }
+        if (trimmed.isEmpty()) return null;
 
         Matcher matcher = JSON_COMMAND_PATTERN.matcher(trimmed);
-        if (matcher.find()) {
-            return matcher.group(1);
-        }
+        if (matcher.find()) return matcher.group(1);
 
         String decoded = urlDecode(trimmed);
         if (!decoded.equals(trimmed)) {
             Matcher decodedMatcher = JSON_COMMAND_PATTERN.matcher(decoded);
-            if (decodedMatcher.find()) {
-                return decodedMatcher.group(1);
-            }
+            if (decodedMatcher.find()) return decodedMatcher.group(1);
         }
 
         String fromKv = extractFromKeyValue(trimmed);
-        if (fromKv != null) {
-            return fromKv;
-        }
-
+        if (fromKv != null) return fromKv;
         if (!decoded.equals(trimmed)) {
             fromKv = extractFromKeyValue(decoded);
-            if (fromKv != null) {
-                return fromKv;
-            }
+            if (fromKv != null) return fromKv;
         }
 
-        if (trimmed.startsWith("\"") && trimmed.endsWith("\"") && trimmed.length() > 1) {
+        if (trimmed.startsWith("\"") && trimmed.endsWith("\"") && trimmed.length() > 1)
             return trimmed.substring(1, trimmed.length() - 1);
-        }
-        if (!decoded.equals(trimmed) && decoded.startsWith("\"") && decoded.endsWith("\"") && decoded.length() > 1) {
+        if (!decoded.equals(trimmed) && decoded.startsWith("\"") && decoded.endsWith("\"") && decoded.length() > 1)
             return decoded.substring(1, decoded.length() - 1);
-        }
 
         return decoded.trim();
     }
@@ -673,9 +614,7 @@ public class JulesHttpBridge extends NanoWSD implements AutoCloseable {
         String[] tokens = candidate.split("&");
         for (String token : tokens) {
             int idx = token.indexOf('=');
-            if (idx <= 0) {
-                continue;
-            }
+            if (idx <= 0) continue;
             String key = token.substring(0, idx).trim();
             if ("command".equalsIgnoreCase(key)) {
                 return urlDecode(token.substring(idx + 1).trim());
@@ -685,10 +624,6 @@ public class JulesHttpBridge extends NanoWSD implements AutoCloseable {
     }
 
     private static String urlDecode(String value) {
-        try {
-            return URLDecoder.decode(value, "UTF-8");
-        } catch (Exception ignored) {
-            return value;
-        }
+        try { return URLDecoder.decode(value, "UTF-8"); } catch (Exception ignored) { return value; }
     }
 }

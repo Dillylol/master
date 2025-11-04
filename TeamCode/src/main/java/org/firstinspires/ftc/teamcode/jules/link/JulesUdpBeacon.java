@@ -2,6 +2,7 @@ package org.firstinspires.ftc.teamcode.jules.link;
 
 import com.google.gson.Gson;
 import com.google.gson.JsonObject;
+import org.firstinspires.ftc.teamcode.jules.bridge.util.GsonCompat;
 
 import java.io.IOException;
 import java.net.DatagramPacket;
@@ -25,10 +26,10 @@ public class JulesUdpBeacon implements AutoCloseable {
     }
 
     public void sendHeartbeat(JsonObject heartbeat, String wsUrl) {
-        if (heartbeat == null) {
-            return;
-        }
-        JsonObject payload = heartbeat.deepCopy();
+        if (heartbeat == null) return;
+
+        JsonObject payload = GsonCompat.deepCopy(heartbeat);  // <-- replace deepCopy()
+
         payload.addProperty("ws_url", wsUrl);
         payload.addProperty("transport", "udp");
         byte[] data = gson.toJson(payload).concat("\n").getBytes(StandardCharsets.UTF_8);
@@ -40,10 +41,9 @@ public class JulesUdpBeacon implements AutoCloseable {
                     PORT
             );
             socket.send(packet);
-        } catch (Exception ignored) {
-            // best effort
-        }
+        } catch (Exception ignored) { }
     }
+
 
     @Override
     public void close() {

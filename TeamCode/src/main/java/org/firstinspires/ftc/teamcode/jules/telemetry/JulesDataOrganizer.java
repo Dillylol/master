@@ -27,7 +27,9 @@ import org.firstinspires.ftc.robotcore.external.navigation.AngleUnit;
 import org.firstinspires.ftc.robotcore.external.navigation.AngularVelocity;
 import org.firstinspires.ftc.robotcore.external.navigation.DistanceUnit;
 import org.firstinspires.ftc.robotcore.external.navigation.YawPitchRollAngles;
-import org.firstinspires.ftc.teamcode.BuildConfig;
+import org.firstinspires.ftc.robotcore.external.navigation.CurrentUnit;
+import org.firstinspires.ftc.teamcode.jules.bridge.util.GsonCompat;
+
 
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -182,20 +184,37 @@ public class JulesDataOrganizer {
     }
 
     private void resolveVersions(HardwareMap map) {
+        // SDK version via RobotLog (handle name differences)
         try {
-            Context context = map.appContext;
-            if (context != null) {
-                sdkVersion = RobotLog.getVersion();
+            try {
+                sdkVersion = (String) RobotLog.class.getMethod("getVersion").invoke(null);
+            } catch (NoSuchMethodException e1) {
+                sdkVersion = (String) RobotLog.class.getMethod("getVersionString").invoke(null);
             }
-        } catch (Exception e) {
+        } catch (Throwable t) {
             sdkVersion = "UNKNOWN";
         }
+
+        // App version: try BuildConfig reflectively; fall back to PackageManager
         try {
-            appVersion = BuildConfig.VERSION_NAME;
-        } catch (Exception ignored) {
-            appVersion = "UNKNOWN";
+            Class<?> bc = Class.forName("org.firstinspires.ftc.teamcode.BuildConfig");
+            Object verName = bc.getField("VERSION_NAME").get(null);
+            appVersion = String.valueOf(verName);
+        } catch (Throwable t) {
+            try {
+                Context ctx = map != null ? map.appContext : null;
+                if (ctx != null) {
+                    appVersion = ctx.getPackageManager()
+                            .getPackageInfo(ctx.getPackageName(), 0).versionName;
+                } else {
+                    appVersion = "UNKNOWN";
+                }
+            } catch (Throwable ignored) {
+                appVersion = "UNKNOWN";
+            }
         }
     }
+
 
     private String getFirstName(HardwareDevice device) {
         if (hardwareMap == null || device == null) {
@@ -252,7 +271,7 @@ public class JulesDataOrganizer {
         long now = System.currentTimeMillis();
         synchronized (lock) {
             data = buildData(now);
-            latestSnapshotData = data.deepCopy();
+            latestSnapshotData = GsonCompat.deepCopy(data);
         }
 
         JsonObject snapshot = new JsonObject();
@@ -261,7 +280,7 @@ public class JulesDataOrganizer {
         snapshot.addProperty("active_opmode", getActiveOpModeName());
         snapshot.add("data", data);
         synchronized (lock) {
-            latestSnapshotMessage = snapshot.deepCopy();
+            latestSnapshotMessage = GsonCompat.deepCopy(snapshot);
         }
         return snapshot;
     }
@@ -298,7 +317,7 @@ public class JulesDataOrganizer {
         }
 
         synchronized (lock) {
-            latestSnapshotData = newData.deepCopy();
+            latestSnapshotData = GsonCompat.deepCopy(newData);
         }
 
         JsonObject diff = new JsonObject();
@@ -418,13 +437,19 @@ public class JulesDataOrganizer {
                     obj.addProperty("velocity", round3(ex.getVelocity()));
                 } catch (Exception ignored) { }
                 try {
-                    double current = ex.getCurrent(DcMotorEx.CurrentUnit.AMPS);
+                    double current = ex.getCurrent(CurrentUnit.AMPS);
                     if (Double.isFinite(current)) {
                         obj.addProperty("bus_current_a", round3(current));
                     }
                 } catch (Exception ignored) { }
                 try {
-                    double temperature = ex.getMotorTemperature();
+                    double temperature = Double.NaN;
+                    try {
+                        temperature = (double) DcMotorEx.class.getMethod("getMotorTemperature").invoke(ex);
+                    } catch (Throwable ignored) {
+                        // Method not present on this SDK/hub; leave as NaN or omit reporting
+                    }
+
                     if (Double.isFinite(temperature)) {
                         obj.addProperty("temp_c", round3(temperature));
                     }
@@ -589,13 +614,13 @@ public class JulesDataOrganizer {
 
     public JsonObject getLatestSnapshotData() {
         synchronized (lock) {
-            return latestSnapshotData == null ? new JsonObject() : latestSnapshotData.deepCopy();
+            return latestSnapshotData == null ? new JsonObject() : GsonCompat.deepCopy(latestSnapshotData);
         }
     }
 
     public JsonObject getLatestSnapshotMessage() {
         synchronized (lock) {
-            return latestSnapshotMessage == null ? null : latestSnapshotMessage.deepCopy();
+            return latestSnapshotMessage == null ? null : GsonCompat.deepCopy(latestSnapshotMessage);
         }
     }
 }

@@ -13,37 +13,34 @@ import org.firstinspires.ftc.teamcode.jules.bridge.JulesStreamBus;
 import org.firstinspires.ftc.teamcode.jules.bridge.JulesCommand;
 import org.firstinspires.ftc.teamcode.jules.bridge.util.GsonCompat;
 
-// Optional Panels libs (we guard usage via reflection-compatible calls)
+// Optional: these imports resolve at compile time if the Panels libs are present
+// We will still guard all usage with reflection so it won't crash if absent.
 import com.bylazar.telemetry.PanelsTelemetry;
 import com.bylazar.gamepad.PanelsGamepad;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.Locale;
-import java.util.Queue;
-import java.util.concurrent.ConcurrentLinkedQueue;
 
 /**
- * JULESSimDrive v3 — virtual drivetrain with JULES hooks + Panels gamepad.
+ * JULESSimDrive v2 — virtual drivetrain with JULES hooks + structured command support
+ * + Panels Gamepad input (combined with FTC gamepad).
  *
- * Key fixes vs prior:
- * - Uses shared JulesBridgeManager (no port rebind, taps existing server).
- * - Robust JSON command handling: accepts {"type":"cmd","text":"{...}"} OR object in text.
- * - Fallback subscription to StreamBus: consumes {type:"cmd", text: ...} events if mailbox is empty.
- * - Panels gamepad integrated exactly like your working OLD program (INSTANCE singletons).
+ * Responds to frames like:
+ * {
+ *   "label": "Drive Forward",
+ *   "name": "drive",
+ *   "args": { "t": 0.5, "p": 0.5, "duration_ms": 400 }
+ * }
+ * and also supports "strafe", "turn", and "stop".
  */
-@TeleOp(name = "JULES SimDrive v3", group = "JULES")
-public class JULESSimDrive extends OpMode {
+@TeleOp(name = "JULES SimDrive (Panels)", group = "JULES")
+public class JULESSimDriveOLD extends OpMode {
 
-    // ---- JULES plumbing (shared) ----
+    // ---- JULES plumbing ----
     private JulesBridgeManager bridgeManager;
     private JulesStreamBus streamBus;
-    private int bridgePort = 58080; // for telemetry only
-
-    // Optional bus subscription fallback
-    private JulesStreamBus.Subscription busSub;
-    private Thread busPump;
-    private final Queue<String> pendingCmds = new ConcurrentLinkedQueue<>();
+    private int bridgePort = 58080;
 
     // ---- Sim state ----
     private final VirtualMotor lf = new VirtualMotor("lf");
@@ -51,7 +48,8 @@ public class JULESSimDrive extends OpMode {
     private final VirtualMotor lr = new VirtualMotor("lr");
     private final VirtualMotor rr = new VirtualMotor("rr");
 
-    private double xIn = 0, yIn = 0, headingDeg = 0; // toy pose
+    // simple pose (inches + degrees), purely illustrative
+    private double xIn = 0, yIn = 0, headingDeg = 0;
 
     // rate keeping
     private final ElapsedTime loopTimer = new ElapsedTime();
@@ -66,60 +64,36 @@ public class JULESSimDrive extends OpMode {
     private boolean cmdActive = false;
     private double cmdEndMs = 0;
     private String  cmdName = null;
-    private String  lastCmdConsumed = "(none)";
 
-    // ---- Panels (reflect-friendly use of Kotlin singletons) ----
-    private Object panelsTelemetryObj;                   // PanelsTelemetry.INSTANCE.getTelemetry()
-    private Object panelsMgr1;                           // PanelsGamepad.INSTANCE.getFirstManager()
-    private Object panelsMgr2;                           // PanelsGamepad.INSTANCE.getSecondManager()
-    private Method asCombinedMethod;                     // asCombinedFTCGamepad(Gamepad)
+    // ---- Panels integration (guarded with reflection) ----
+    private Object panelsTelemetryObj;          // PanelsTelemetry.INSTANCE.getTelemetry()
+    private Object panelsMgr1;                  // PanelsGamepad.INSTANCE.getFirstManager()
+    private Object panelsMgr2;                  // PanelsGamepad.INSTANCE.getSecondManager()
+    private Method asCombinedMethod;            // asCombinedFTCGamepad(Gamepad)
+
+    // add near other fields
+    private java.util.concurrent.ConcurrentLinkedQueue<String> pendingCmds = new java.util.concurrent.ConcurrentLinkedQueue<>();
+    private Object busSubscription;   // JulesStreamBus.Subscription via reflection
+    private Thread busPumpThread;
 
     @Override
     public void init() {
-        // 1) Attach to existing JULES bridge/bus
+        // JULES streaming via shared bridge manager
         bridgeManager = JulesBridgeManager.getInstance();
         if (bridgeManager != null) {
-            bridgeManager.prepare(hardwareMap.appContext); // ensure context set
+            // Ensure the manager knows about our context; it will only auto-start if previously configured
+            bridgeManager.prepare(hardwareMap.appContext);
             bridgePort = bridgeManager.getPort();
             streamBus = bridgeManager.getStreamBus();
+
         }
 
-        // 1a) Subscribe to bus for cmd events as a fallback path
-        if (streamBus != null) {
-            try {
-                busSub = streamBus.subscribe();
-                busPump = new Thread(() -> {
-                    try {
-                        for (;;) {
-                            String line = busSub.take();
-                            if (line == null) break;
-                            JsonElement el = GsonCompat.parse(line);
-                            if (el != null && el.isJsonObject()) {
-                                JsonObject o = el.getAsJsonObject();
-                                String t = optString(o, "type");
-                                if (t != null && t.equalsIgnoreCase("cmd")) {
-                                    // Expect {type:"cmd", text: <string or object>}
-                                    if (o.has("text")) {
-                                        if (o.get("text").isJsonObject()) {
-                                            pendingCmds.offer(o.getAsJsonObject("text").toString());
-                                        } else if (o.get("text").isJsonPrimitive()) {
-                                            pendingCmds.offer(o.get("text").getAsString());
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    } catch (InterruptedException ie) {
-                        Thread.currentThread().interrupt();
-                    } catch (Throwable ignored) { }
-                }, "JulesSimBusPump");
-                busPump.setDaemon(true);
-                busPump.start();
-            } catch (Throwable ignored) { }
+        // Panels telemetry + gamepad managers (use Kotlin object INSTANCE from Java)
+        try {
+            panelsTelemetryObj = PanelsTelemetry.INSTANCE.getTelemetry();
+        } catch (Throwable t) {
+            panelsTelemetryObj = null;
         }
-
-        // 2) Panels telemetry + gamepad managers (Kotlin singletons via Java)
-        try { panelsTelemetryObj = PanelsTelemetry.INSTANCE.getTelemetry(); } catch (Throwable t) { panelsTelemetryObj = null; }
         try {
             panelsMgr1 = PanelsGamepad.INSTANCE.getFirstManager();
             panelsMgr2 = PanelsGamepad.INSTANCE.getSecondManager();
@@ -127,43 +101,56 @@ public class JULESSimDrive extends OpMode {
                 asCombinedMethod = panelsMgr1.getClass().getMethod("asCombinedFTCGamepad", Gamepad.class);
             }
         } catch (Throwable ignored) {
-            panelsMgr1 = null; panelsMgr2 = null; asCombinedMethod = null;
+            panelsMgr1 = null;
+            panelsMgr2 = null;
+            asCombinedMethod = null;
         }
 
-        ptInfo("JULES SimDrive v3 online (manual='X' to toggle)");
+        ptInfo("JULES SimDrive (Panels) online");
+        telemetry.addLine("JULES SimDrive (Panels) online");
         if (bridgeManager != null) {
             String adv = bridgeManager.getAdvertiseLine();
-            if (adv != null) { telemetry.addLine(adv); ptInfo(adv); }
-            if (streamBus == null) {
-                String offline = "JULES bus offline — run 'JULES: Enable & Status'.";
-                telemetry.addLine(offline); ptInfo(offline);
+            telemetry.addLine(adv);
+            ptInfo(adv);
+            if (bridgeManager.getStreamBus() == null) {
+                String offline = "JULES bridge offline - run 'JULES: Enable & Status'.";
+                telemetry.addLine(offline);
+                ptInfo(offline);
             }
         } else {
             String offline = "JULES bridge unavailable.";
-            telemetry.addLine(offline); ptInfo(offline);
+            telemetry.addLine(offline);
+            ptInfo(offline);
         }
         telemetry.update();
+
         loopTimer.reset();
     }
 
-    @Override public void start() { publishHeartbeat(); publishSnapshot(); }
+    @Override
+    public void start() {
+        publishHeartbeat();
+        publishSnapshot();
+    }
 
     @Override
     public void loop() {
         final double nowMs = loopTimer.milliseconds();
         final double dt = Math.max(0.001, (nowMs - lastSnapshotMs) / 1000.0);
 
-        // 1) Commands (mailbox + bus fallback)
+        // 1) Handle structured / text commands
         handleIncomingCommand();
 
-        // 1b) Timed command stop
+        // 1b) End timed commands
         if (cmdActive && nowMs >= cmdEndMs) {
             setDrivePowers(0,0,0,0);
             publishCmdStatus(cmdName, "completed", null);
-            cmdActive = false; cmdName = null; manualMode = true;
+            cmdActive = false;
+            cmdName = null;
+            manualMode = true; // fall back to manual after a timed command ends
         }
 
-        // 2) Manual drive (Panels-combined preferred)
+        // 2) Optional manual drive (Panels-combined preferred, FTC fallback)
         boolean toggle = readButton("x");
         if (toggle && !lastToggleBtn) manualMode = !manualMode;
         lastToggleBtn = toggle;
@@ -188,7 +175,6 @@ public class JULESSimDrive extends OpMode {
         String pose = String.format(Locale.US, "x=%.1f y=%.1f θ=%.1f°", xIn, yIn, headingDeg);
         telemetry.addData("mode", manualMode ? "manual" : "programmatic");
         telemetry.addData("cmdActive", cmdActive);
-        telemetry.addData("lastCmd", lastCmdConsumed);
         telemetry.addData("pose", pose);
         telemetry.addData("lf", lf.debug());
         telemetry.addData("rf", rf.debug());
@@ -197,7 +183,6 @@ public class JULESSimDrive extends OpMode {
         telemetry.update();
 
         ptDebug("mode=" + (manualMode ? "manual" : "programmatic") + ", cmdActive=" + cmdActive);
-        ptDebug("lastCmd " + lastCmdConsumed);
         ptDebug("pose " + pose);
         ptDebug("lf " + lf.debug());
         ptDebug("rf " + rf.debug());
@@ -208,26 +193,24 @@ public class JULESSimDrive extends OpMode {
 
     @Override
     public void stop() {
-        try { if (busSub != null) { busSub.close(); busSub = null; } } catch (Throwable ignored) {}
-        try { if (busPump != null) { busPump.interrupt(); busPump = null; } } catch (Throwable ignored) {}
     }
 
     // ------------------------------------------------------------
-    // Command handling (robust to text-as-string and text-as-object)
+    // Command handling
     // ------------------------------------------------------------
     private void handleIncomingCommand() {
         try {
-            String raw = mailboxOrBusTake();
+            String raw = mailboxTake();
             if (raw == null) return;
             raw = raw.trim();
 
-            // Prefer structured JSON first
+            // ---------- Prefer structured JSON ----------
             if (raw.startsWith("{") && raw.endsWith("}")) {
                 JsonElement el = GsonCompat.parse(raw);
                 if (el != null && el.isJsonObject()) {
                     JsonObject root = el.getAsJsonObject();
 
-                    // Unwrap typical server frame: {"type":"cmd","text": <OBJECT|STRING>}
+                    // Unwrap {"type":"cmd","text": ...} where text may be OBJECT or STRING
                     if (root.has("type") && root.has("text")) {
                         JsonElement txt = root.get("text");
                         if (txt.isJsonObject()) {
@@ -237,84 +220,101 @@ public class JULESSimDrive extends OpMode {
                             if (inner != null && inner.isJsonObject()) {
                                 root = inner.getAsJsonObject();
                             } else {
-                                // could be plain-text command inside text
                                 handlePlainText(txt.getAsString().toLowerCase(Locale.US));
-                                lastCmdConsumed = txt.getAsString();
                                 return;
                             }
                         }
                     }
 
-                    // Allow {"command":"..."} style too
-                    if (root.has("command") && root.get("command").isJsonPrimitive()) {
-                        String cmdStr = root.get("command").getAsString();
-                        JsonElement inner = GsonCompat.parse(cmdStr);
-                        if (inner != null && inner.isJsonObject()) {
-                            root = inner.getAsJsonObject();
-                        } else {
-                            handlePlainText(cmdStr.toLowerCase(Locale.US));
-                            lastCmdConsumed = cmdStr;
-                            return;
-                        }
-                    }
-
-                    // Now expect { label?, name? | type?, args? }
+                    // Now root is expected to look like:
+                    // { "label": "...", "name": "drive|strafe|turn|stop", "args": { ... } }
                     String name = optString(root, "name");
-                    String type = (name == null) ? optString(root, "type") : null;
-                    String verb = (name != null) ? name : type;
+                    String type = (name == null) ? optString(root, "type") : null; // also allow {"type":"drive", ...}
+
+                    // Normalize which key we're using
+                    String verb = (name != null) ? name : (type != null ? type : null);
                     if (verb != null) verb = verb.toLowerCase(Locale.US);
 
                     if ("drive".equals(verb)) {
-                        JsonObject args = root.has("args") && root.get("args").isJsonObject() ? root.getAsJsonObject("args") : new JsonObject();
-                        double p  = optDouble(args, new String[]{"p","power","fwd","forward"}, 0.0);
-                        double t  = optDouble(args, new String[]{"t","turn"}, 0.0);
-                        double s  = optDouble(args, new String[]{"s","strafe","x"}, 0.0);
+                        JsonObject args = root.has("args") && root.get("args").isJsonObject()
+                                ? root.getAsJsonObject("args") : new JsonObject();
+
+                        double p  = optDouble(args, new String[]{"p","power","fwd","forward"}, 0.0); // forward
+                        double t  = optDouble(args, new String[]{"t","turn"}, 0.0);                 // turn
+                        double s  = optDouble(args, new String[]{"s","strafe","x"}, 0.0);           // strafe
                         int ms    = (int)Math.round(optDouble(args, new String[]{"duration_ms","ms","duration"}, 0.0));
-                        manualMode = false; setDriveFromVectors(p, s, t); publishCmdStatus("drive","started", args);
-                        if (ms > 0) { cmdActive = true; cmdEndMs = loopTimer.milliseconds() + ms; cmdName = "drive"; }
-                        lastCmdConsumed = root.toString();
-                        return;
-                    }
-                    if ("strafe".equals(verb)) {
-                        JsonObject args = root.has("args") && root.get("args").isJsonObject() ? root.getAsJsonObject("args") : new JsonObject();
-                        double s = optDouble(args, new String[]{"speed","s","strafe","x"}, 0.0);
-                        int ms   = (int)Math.round(optDouble(args, new String[]{"duration_ms","ms","duration"}, 0.0));
-                        manualMode = false; setDriveFromVectors(0, s, 0); publishCmdStatus("strafe","started", args);
-                        if (ms > 0) { cmdActive = true; cmdEndMs = loopTimer.milliseconds() + ms; cmdName = "strafe"; }
-                        lastCmdConsumed = root.toString();
-                        return;
-                    }
-                    if ("turn".equals(verb)) {
-                        JsonObject args = root.has("args") && root.get("args").isJsonObject() ? root.getAsJsonObject("args") : new JsonObject();
-                        double sp = optDouble(args, new String[]{"speed","t","turn"}, 0.0);
-                        int ms    = (int)Math.round(optDouble(args, new String[]{"duration_ms","ms","duration"}, 0.0));
-                        manualMode = false; setDriveFromVectors(0, 0, sp); publishCmdStatus("turn","started", args);
-                        if (ms > 0) { cmdActive = true; cmdEndMs = loopTimer.milliseconds() + ms; cmdName = "turn"; }
-                        lastCmdConsumed = root.toString();
-                        return;
-                    }
-                    if ("stop".equals(verb)) {
-                        manualMode = false; setDrivePowers(0,0,0,0); publishCmdStatus("stop","completed", root);
-                        cmdActive = false; cmdName = null; lastCmdConsumed = root.toString();
+
+                        manualMode = false;
+                        setDriveFromVectors(p, s, t);
+                        publishCmdStatus("drive", "started", args);
+                        if (ms > 0) {
+                            cmdActive = true;
+                            cmdEndMs  = loopTimer.milliseconds() + ms;
+                            cmdName   = "drive";
+                        }
                         return;
                     }
 
-                    // Unknown JSON → try plain text in a text field
+                    if ("strafe".equals(verb)) {
+                        JsonObject args = root.has("args") && root.get("args").isJsonObject()
+                                ? root.getAsJsonObject("args") : new JsonObject();
+
+                        double s = optDouble(args, new String[]{"speed","s","strafe","x"}, 0.0);
+                        int ms   = (int)Math.round(optDouble(args, new String[]{"duration_ms","ms","duration"}, 0.0));
+
+                        manualMode = false;
+                        setDriveFromVectors(0, s, 0);
+                        publishCmdStatus("strafe", "started", args);
+                        if (ms > 0) {
+                            cmdActive = true;
+                            cmdEndMs  = loopTimer.milliseconds() + ms;
+                            cmdName   = "strafe";
+                        }
+                        return;
+                    }
+
+                    if ("turn".equals(verb)) {
+                        JsonObject args = root.has("args") && root.get("args").isJsonObject()
+                                ? root.getAsJsonObject("args") : new JsonObject();
+
+                        double sp = optDouble(args, new String[]{"speed","t","turn"}, 0.0);
+                        int ms    = (int)Math.round(optDouble(args, new String[]{"duration_ms","ms","duration"}, 0.0));
+
+                        manualMode = false;
+                        setDriveFromVectors(0, 0, sp);
+                        publishCmdStatus("turn", "started", args);
+                        if (ms > 0) {
+                            cmdActive = true;
+                            cmdEndMs  = loopTimer.milliseconds() + ms;
+                            cmdName   = "turn";
+                        }
+                        return;
+                    }
+
+                    if ("stop".equals(verb)) {
+                        manualMode = false;
+                        setDrivePowers(0,0,0,0);
+                        publishCmdStatus("stop", "completed", root);
+                        cmdActive = false;
+                        cmdName   = null;
+                        return;
+                    }
+
+                    // Unknown JSON command → fall back to plain text if there is a "text" field
                     if (root.has("text") && root.get("text").isJsonPrimitive()) {
-                        String s = root.get("text").getAsString();
-                        handlePlainText(s.toLowerCase(Locale.US));
-                        lastCmdConsumed = s;
+                        handlePlainText(root.get("text").getAsString().toLowerCase(Locale.US));
                         return;
                     }
                 }
             }
 
-            // Plain text fallback
+            // ---------- Plain-text fallback (e.g., "forward 0.5 400") ----------
             handlePlainText(raw.toLowerCase(Locale.US));
-            lastCmdConsumed = raw;
+
         } catch (Throwable ignored) { }
     }
 
+    // Plain-text helper (unchanged from your previous version)
     private void handlePlainText(String lower) {
         manualMode = false;
         double p = parseMagnitude(lower, 0.6);
@@ -335,25 +335,6 @@ public class JULESSimDrive extends OpMode {
         }
     }
 
-    private String mailboxOrBusTake() {
-        // 1) Bus queue (from subscription)
-        String s = pendingCmds.poll();
-        if (s != null) return s;
-        // 2) JulesCommand mailbox (shared static)
-        try {
-            for (String m : new String[]{"getAndClear","take","poll","consume","next"}) {
-                try { Method mm = JulesCommand.class.getMethod(m); Object out = mm.invoke(null); return out != null ? out.toString() : null; } catch (NoSuchMethodException ignored) {}
-            }
-            try {
-                Method get = JulesCommand.class.getMethod("get");
-                Object out = get.invoke(null);
-                if (out == null) return null;
-                try { JulesCommand.class.getMethod("clear").invoke(null);} catch (NoSuchMethodException e){ JulesCommand.class.getMethod("setCommand", String.class).invoke(null, (String) null);}
-                return out.toString();
-            } catch (NoSuchMethodException ignored) {}
-        } catch (Throwable ignored) {}
-        return null;
-    }
 
     private void publishCmdStatus(String name, String status, JsonObject args) {
         JsonObject ev = new JsonObject();
@@ -372,7 +353,9 @@ public class JULESSimDrive extends OpMode {
     private static double optDouble(JsonObject o, String[] keys, double def) {
         if (o == null) return def;
         for (String k : keys) {
-            try { if (o.has(k) && o.get(k).isJsonPrimitive()) return o.get(k).getAsDouble(); } catch (Exception ignored) {}
+            try {
+                if (o.has(k) && o.get(k).isJsonPrimitive()) return o.get(k).getAsDouble();
+            } catch (Exception ignored) {}
         }
         return def;
     }
@@ -404,8 +387,8 @@ public class JULESSimDrive extends OpMode {
     }
 
     private void stepKinematics(double dt) {
-        double linScale = 40.0; // in/s per full power
-        double rotScale = 90.0; // deg/s per full power diff
+        double linScale = 40.0; // in/s
+        double rotScale = 90.0; // deg/s
         double pLF = lf.power, pRF = rf.power, pLR = lr.power, pRR = rr.power;
         double vx = linScale * (pLF + pRF + pLR + pRR) / 4.0;                 // forward
         double vy = linScale * (-pLF + pRF + pLR - pRR) / 4.0;                // strafe
@@ -422,7 +405,7 @@ public class JULESSimDrive extends OpMode {
         hb.addProperty("type", "heartbeat");
         hb.addProperty("ts_ms", System.currentTimeMillis());
         hb.addProperty("uptime_ms", (long) loopTimer.milliseconds());
-        hb.addProperty("active_opmode", "JULES SimDrive v3");
+        hb.addProperty("active_opmode", "JULES SimDrive (Panels)");
         hb.addProperty("battery_v", 12.5);
         hb.addProperty("port", bridgePort);
         busPublish(hb.toString());
@@ -453,21 +436,6 @@ public class JULESSimDrive extends OpMode {
         busPublish(snap.toString());
     }
 
-    private void busPublish(String json) {
-        if (json == null) return;
-        JulesStreamBus bus = resolveStreamBus();
-        if (bus == null) return;
-        try { bus.publishJsonLine(json); } catch (Throwable ignored) {}
-    }
-
-    private JulesStreamBus resolveStreamBus() {
-        if (bridgeManager != null) {
-            JulesStreamBus shared = bridgeManager.getStreamBus();
-            if (shared != null) { streamBus = shared; return shared; }
-        }
-        return streamBus;
-    }
-
     // ------------------------------------------------------------
     // Virtual motor model
     // ------------------------------------------------------------
@@ -496,7 +464,46 @@ public class JULESSimDrive extends OpMode {
     }
 
     // ------------------------------------------------------------
-    // Panels helpers (combined gamepad + telemetry)
+    // Compat helpers (JULES command mailbox + stream bus)
+    // ------------------------------------------------------------
+    private String mailboxTake() {
+        try {
+            for (String m : new String[]{"getAndClear","take","poll","consume","next"}) {
+                try { Method mm = JulesCommand.class.getMethod(m); Object out = mm.invoke(null); return out != null ? out.toString() : null; } catch (NoSuchMethodException ignored) {}
+            }
+            try {
+                Method get = JulesCommand.class.getMethod("get");
+                Object out = get.invoke(null);
+                if (out == null) return null;
+                try { JulesCommand.class.getMethod("clear").invoke(null);} catch (NoSuchMethodException e){ JulesCommand.class.getMethod("setCommand", String.class).invoke(null, (String) null);}
+                return out.toString();
+            } catch (NoSuchMethodException ignored) {}
+        } catch (Throwable ignored) {}
+        return null;
+    }
+
+    private void busPublish(String json) {
+        if (json == null) return;
+        JulesStreamBus bus = resolveStreamBus();
+        if (bus == null) return;
+        try {
+            bus.publishJsonLine(json);
+        } catch (Throwable ignored) {}
+    }
+
+    private JulesStreamBus resolveStreamBus() {
+        if (bridgeManager != null) {
+            JulesStreamBus shared = bridgeManager.getStreamBus();
+            if (shared != null) {
+                streamBus = shared;
+                return shared;
+            }
+        }
+        return streamBus;
+    }
+
+    // ------------------------------------------------------------
+    // Panels helpers (combined gamepad + telemetry via reflection)
     // ------------------------------------------------------------
     private Object getCombined(PanelsSide side) {
         try {
@@ -504,10 +511,13 @@ public class JULESSimDrive extends OpMode {
             if (mgr == null || asCombinedMethod == null) return null;
             Gamepad base = (side == PanelsSide.FIRST) ? gamepad1 : gamepad2;
             return asCombinedMethod.invoke(mgr, base);
-        } catch (Throwable ignored) { return null; }
+        } catch (Throwable ignored) {
+            return null;
+        }
     }
 
     private boolean readButton(String name) {
+        // prefer Panels-combined g1, fallback to raw FTC
         Object combined = getCombined(PanelsSide.FIRST);
         if (combined != null) {
             Boolean v = getBoolField(combined, name);
@@ -536,6 +546,7 @@ public class JULESSimDrive extends OpMode {
         try {
             Field f = Gamepad.class.getField(name);
             if (f.getType() == boolean.class) return f.getBoolean(gp);
+            // synonyms
             if (name.equals("options")) return gp.start;
             if (name.equals("back"))    return gp.back;
             if (name.equals("guide"))   return gp.guide;
@@ -554,7 +565,7 @@ public class JULESSimDrive extends OpMode {
 
     private enum PanelsSide { FIRST, SECOND }
 
-    // Panels Telemetry wrappers
+    // Panels Telemetry wrappers (avoid hard compile-time coupling)
     private void ptInfo(String msg) {
         if (panelsTelemetryObj == null) return;
         try { panelsTelemetryObj.getClass().getMethod("info", String.class).invoke(panelsTelemetryObj, msg); } catch (Throwable ignored) {}

@@ -1,4 +1,4 @@
-package org.firstinspires.ftc.teamcode.jules.shot;
+package org.firstinspires.ftc.teamcode.jules.RLDataCollectors.RLDataCollectors.shot;
 
 import com.qualcomm.robotcore.hardware.DcMotor;
 import com.qualcomm.robotcore.hardware.DcMotorEx;

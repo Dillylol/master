@@ -1,4 +1,4 @@
-package org.firstinspires.ftc.teamcode.jules.shot;
+package org.firstinspires.ftc.teamcode.jules.RLDataCollectors.RLDataCollectors.shot;
 
 /**
  * Immutable-ish data class describing the planner's guidance for a single shot.

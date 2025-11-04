@@ -1,8 +1,7 @@
-package org.firstinspires.ftc.teamcode.jules.shot;
+package org.firstinspires.ftc.teamcode.jules.RLDataCollectors.RLDataCollectors.shot;
 
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
-import com.google.gson.JsonParser;
 
 import org.firstinspires.ftc.teamcode.jules.bridge.JulesStreamBus;
 
@@ -143,7 +142,7 @@ public final class ShotPlannerBridge {
 
     private static JsonElement parse(String raw) {
         try {
-            return JsonParser.parseString(raw);
+            return new com.google.gson.JsonParser().parse(raw);
         } catch (Exception ignored) {
             return null;
         }

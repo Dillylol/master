@@ -1,4 +1,4 @@
-package org.firstinspires.ftc.teamcode.jules.shot;
+package org.firstinspires.ftc.teamcode.jules.RLDataCollectors.RLDataCollectors.shot;
 
 import com.google.gson.JsonObject;
 

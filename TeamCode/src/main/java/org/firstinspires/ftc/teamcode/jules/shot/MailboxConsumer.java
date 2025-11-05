@@ -1,5 +1,7 @@
 package org.firstinspires.ftc.teamcode.jules.shot;
 
+import androidx.annotation.Nullable;
+
 import com.google.gson.JsonObject;
 
 import org.firstinspires.ftc.teamcode.jules.bridge.JulesCommand;
@@ -20,19 +22,41 @@ public final class MailboxConsumer {
     /**
      * Poll the mailbox once. Returns a new {@link ShotPlan} when accepted; otherwise {@code null}.
      */
-    public ShotPlan poll(long nowMs) {
-        String raw = JulesCommand.getAndClearCommand();
-        if (raw == null) {
-            return null;
+    public ShotPlan poll(long wallClockNowMs) {
+        while (true) {
+            JsonObject payload = bridge != null ? bridge.pollInbound() : null;
+            if (payload == null) {
+                String raw = JulesCommand.getAndClearCommand();
+                if (raw == null || bridge == null) {
+                    return null;
+                }
+                payload = ShotPlannerBridge.unwrap(raw);
+                if (payload == null) {
+                    continue;
+                }
+            }
+
+            if (bridge.isModelUpdate(payload)) {
+                rpmProvider.applyUpdate(payload);
+                continue;
+            }
+
+            if (bridge.isShotResult(payload)) {
+                continue;
+            }
+
+            ShotPlan plan = bridge.tryParseShotPlan(payload, wallClockNowMs);
+            if (plan != null) {
+                return plan;
+            }
         }
-        JsonObject payload = ShotPlannerBridge.unwrap(raw);
-        if (payload == null) {
-            return null;
-        }
-        if (bridge.isModelUpdate(payload)) {
-            rpmProvider.applyUpdate(payload);
-            return null;
-        }
-        return bridge.tryParseShotPlan(payload, nowMs);
+    }
+
+    public ShotPlannerBridge.ShotResult pollShotResult() {
+        return bridge != null ? bridge.pollShotResult() : null;
+    }
+
+    public ShotPlannerBridge.HelloAck pollHelloAck() {
+        return bridge != null ? bridge.pollHelloAck() : null;
     }
 }

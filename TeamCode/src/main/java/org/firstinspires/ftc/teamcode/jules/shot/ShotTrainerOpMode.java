@@ -1,4 +1,4 @@
-package org.firstinspires.ftc.teamcode.jules.RLDataCollectors.RLDataCollectors.shot;
+package org.firstinspires.ftc.teamcode.jules.shot;
 
 import com.google.gson.JsonObject;
 import com.pedropathing.follower.Follower;
@@ -341,12 +341,17 @@ public final class ShotTrainerOpMode extends OpMode {
         return result;
     }
 
-    // ShooterController (or wherever this lived)
     private double readGateInches() {
-        // Onboard photogate not used; scoring comes from client.
-        return -1.0;
+        if (gateSensor == null) {
+            return -1.0;
+        }
+        try {
+            double inches = gateSensor.getDistance(com.qualcomm.robotcore.external.navigation.DistanceUnit.INCH);
+            return (Double.isNaN(inches) || inches <= 0) ? -1.0 : inches;
+        } catch (Exception e) {
+            return -1.0;
+        }
     }
-
 
     private double clampRange(double value) {
         return Math.max(MIN_RANGE_IN, Math.min(MAX_RANGE_IN, value));

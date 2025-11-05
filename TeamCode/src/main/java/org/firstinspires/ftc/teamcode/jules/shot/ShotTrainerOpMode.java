@@ -1,385 +1,410 @@
-package org.firstinspires.ftc.teamcode.jules.shot;
+package org.firstinspires.ftc.teamcode.jules.tests;
 
+import static java.lang.Math.abs;
+
+import androidx.annotation.Nullable;
+
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
-import com.pedropathing.follower.Follower;
-import com.pedropathing.geometry.Pose;
-import com.qualcomm.robotcore.eventloop.opmode.OpMode;
-import com.qualcomm.robotcore.eventloop.opmode.TeleOp;
-import com.qualcomm.robotcore.hardware.DistanceSensor;
+
+import com.qualcomm.robotcore.eventloop.opmode.Autonomous;
+import com.qualcomm.robotcore.eventloop.opmode.LinearOpMode;
+import com.qualcomm.robotcore.hardware.DcMotorEx;
+import com.qualcomm.robotcore.hardware.Servo;
 import com.qualcomm.robotcore.hardware.VoltageSensor;
 import com.qualcomm.robotcore.util.ElapsedTime;
+import com.qualcomm.robotcore.util.RobotLog;
+
+import com.pedropathing.follower.Follower;
+import com.pedropathing.geometry.Pose;
 
 import org.firstinspires.ftc.teamcode.common.BjornHardware;
 import org.firstinspires.ftc.teamcode.jules.bridge.JulesBridgeManager;
 import org.firstinspires.ftc.teamcode.jules.bridge.JulesStreamBus;
+import org.firstinspires.ftc.teamcode.jules.bridge.util.GsonCompat;
+import org.firstinspires.ftc.teamcode.jules.shot.MailboxConsumer;
+import org.firstinspires.ftc.teamcode.jules.shot.PedroShotNavigator;
+import org.firstinspires.ftc.teamcode.jules.shot.RpmProvider;
+import org.firstinspires.ftc.teamcode.jules.shot.ShooterController;
+import org.firstinspires.ftc.teamcode.jules.shot.ShotPlan;
+import org.firstinspires.ftc.teamcode.jules.shot.ShotPlannerBridge;
 import org.firstinspires.ftc.teamcode.pedroPathing.Constants;
 
+import java.io.BufferedReader;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 
 /**
- * TeleOp module that executes the single-shot curriculum loop.
+ * Integrated trainer OpMode that executes the request → spin → fire loop against the planner.
  */
-@TeleOp(name = "JULES Shot Trainer", group = "Jules")
-public final class ShotTrainerOpMode extends OpMode {
-    private enum State { DRIVE_AIM, REQUEST_PLAN, SPINUP_WAIT, FIRE_SEQ, RESULT_WAIT }
+@Autonomous(name = "JULES: Shot Planner", group = "JULES")
+public final class ShotTrainerOpMode extends LinearOpMode {
+
+    private static final String TAG = "ShotTrainerOpMode";
 
     private static final double MIN_RANGE_IN = 28.0;
     private static final double MAX_RANGE_IN = 68.0;
-    private static final double STEP_IN = 4.0;
-    private static final int RPM_READY_TOL = 30;
-    private static final int RPM_DIP_THRESHOLD = 120;
-    private static final long POST_FIRE_WINDOW_MS = 1500L;
-    private static final double TAG_X_IN = 0.0;
-    private static final double TAG_Y_IN = 0.0;
-    private static final double APPROACH_AXIS_DEG = 0.0; // robot downfield of tag
-    private static final double POSE_TOL_IN = 1.0;
-    private static final double HEADING_TOL_DEG = 2.0;
-    private static final double GATE_TRIGGER_IN = 5.0;
+    private static final double INITIAL_RANGE_IN = 36.0;
+    private static final double AIM_TOLERANCE_DEG = 6.0;
+    private static final double RANGE_TOL_IN = 0.75;
+    private static final long OBS_INTERVAL_MS = 80L;
+    private static final long PLAN_REQUEST_INTERVAL_MS = 200L;
+    private static final int WARMUP_SHOTS = 2;
+    private static final double BATTERY_ABORT_V = 11.0;
 
-    private final ElapsedTime clock = new ElapsedTime();
-
-    private Follower follower;
-    private PedroShotNavigator navigator;
+    private VoltageSensor voltageSensor;
     private ShooterController shooter;
-    private DistanceSensor gateSensor;
-    private List<VoltageSensor> voltageSensors;
-
+    private PedroShotNavigator navigator;
     private RpmProvider rpmProvider;
-    private ShotPlannerBridge plannerBridge;
-    private MailboxConsumer mailboxConsumer;
+    private ShotPlannerBridge bridge;
+    private MailboxConsumer mailbox;
 
-    private ShotPlan currentPlan = ShotPlan.idle();
-    private ShotPlan pendingPlan;
+    private boolean warmupComplete = false;
+    private int warmupShotsRemaining = WARMUP_SHOTS;
+    private final List<Double> warmupBiasSamples = new ArrayList<>();
 
-    private double rangeTargetIn = MIN_RANGE_IN;
-    private double lastBattery = 12.0;
-    private double lastRange = MIN_RANGE_IN;
-    private double lastHeadingToTag = 0.0;
-    private double rpmCommanded = 0.0;
-    private double rpmMeasured = 0.0;
-    private double rpmHint = 0.0;
+    private ShotPlan activePlan;
+    private boolean planShotTriggered = false;
+    private boolean waitingForCommand = true;
+    private double currentHeadingOffsetDeg = 0.0;
 
-    private State state = State.DRIVE_AIM;
-    private boolean planRequested;
-    private boolean fireNowLatched;
-    private long fireCommandedAtMs = -1;
+    private long lastObsSentMs = 0L;
+    private long lastPlanRequestMs = -PLAN_REQUEST_INTERVAL_MS;
+    private long sessionStartMs = 0L;
 
-    private long resultWindowDeadlineMs;
-    private boolean shotFired;
-    private boolean observationSent;
-    private int rpmAtFire;
-    private long shotDetectedMs;
-    private int hitLatched = -1;
-    private boolean gateTriggered;
-
-    private boolean fireSeqPrimed;
-    private boolean resultPrimed;
-
-    private boolean g1APrev, g1BPrev, g2APrev, g2BPrev;
+    private boolean sessionAborted = false;
 
     @Override
-    public void init() {
-        telemetry.setMsTransmissionInterval(75);
-        follower = Constants.createFollower(hardwareMap);
-        navigator = new PedroShotNavigator(follower, TAG_X_IN, TAG_Y_IN, APPROACH_AXIS_DEG, POSE_TOL_IN, HEADING_TOL_DEG);
-        navigator.initialize(rangeTargetIn);
-        Pose start = new Pose(TAG_X_IN + rangeTargetIn, TAG_Y_IN, Math.toRadians(APPROACH_AXIS_DEG + 180.0));
-        try { follower.setStartingPose(start); } catch (Exception ignored) { }
-
+    public void runOpMode() {
         BjornHardware hardware = BjornHardware.forAutonomous(hardwareMap);
-        shooter = new ShooterController(hardware.wheel, hardware.intake, hardware.lift);
-        gateSensor = hardware.frontTof;
-        voltageSensors = hardwareMap.getAll(VoltageSensor.class);
+        DcMotorEx wheel = hardware.wheel;
+        DcMotorEx intake = hardware.intake;
+        Servo lift = hardware.lift;
+        voltageSensor = hardwareMap.voltageSensor.iterator().hasNext()
+                ? hardwareMap.voltageSensor.iterator().next()
+                : null;
+
+        Follower follower = Constants.createFollower(hardwareMap);
+        Pose tagPose = new Pose(0, 0, Math.toRadians(0));
+        try {
+            double startX = tagPose.getX() - Math.cos(tagPose.getHeading()) * INITIAL_RANGE_IN;
+            double startY = tagPose.getY() - Math.sin(tagPose.getHeading()) * INITIAL_RANGE_IN;
+            follower.setStartingPose(new Pose(startX, startY, tagPose.getHeading()));
+        } catch (Exception ignored) {
+        }
+
+        navigator = new PedroShotNavigator(
+                follower,
+                tagPose,
+                AIM_TOLERANCE_DEG,
+                RANGE_TOL_IN,
+                INITIAL_RANGE_IN,
+                MIN_RANGE_IN,
+                MAX_RANGE_IN);
+
+        shooter = new ShooterController(wheel, intake, lift);
+        rpmProvider = new RpmProvider();
 
         JulesBridgeManager bridgeManager = JulesBridgeManager.getInstance();
         bridgeManager.prepare(hardwareMap.appContext);
-        JulesStreamBus streamBus = bridgeManager.getStreamBus();
+        JulesStreamBus bus = bridgeManager.getStreamBus();
+        bridge = new ShotPlannerBridge(bus);
+        mailbox = new MailboxConsumer(bridge, rpmProvider);
 
-        rpmProvider = RpmProvider.withDefaults();
-        plannerBridge = new ShotPlannerBridge(streamBus);
-        mailboxConsumer = new MailboxConsumer(plannerBridge);
+        loadInitialModel();
 
-        clock.reset();
-    }
+        telemetry.addLine("JULES Shot Planner ready. Press START.");
+        telemetry.update();
 
-    @Override
-    public void start() {
-        clock.reset();
-    }
-
-    @Override
-    public void loop() {
-        long nowMs = (long) clock.milliseconds();
-
-        mailboxConsumer.poll(nowMs, new MailboxConsumer.Handler() {
-            @Override
-            public void onShotPlan(ShotPlan plan) {
-                pendingPlan = plan;
-            }
-
-            @Override
-            public void onRpmModelUpdate(JsonObject update) {
-                rpmProvider.applyUpdate(update);
-            }
-        });
-
-        if (pendingPlan != null) {
-            currentPlan = pendingPlan;
-            pendingPlan = null;
-        }
-
-        navigator.update();
-        shooter.update(nowMs);
-
-        PedroShotNavigator.PoseSnapshot pose = navigator.snapshot();
-        lastRange = navigator.rangeToTag();
-        lastHeadingToTag = navigator.headingToTagDeg();
-        lastBattery = readBatteryVoltage();
-
-        rpmHint = rpmProvider.targetRpm(lastRange, lastBattery);
-        double bias = currentPlan.getRpmBias();
-        rpmCommanded = Math.max(0.0, rpmHint + bias);
-        rpmMeasured = shooter.getMeasuredRpm();
-
-        int rpmTarget = (state == State.SPINUP_WAIT || state == State.FIRE_SEQ || state == State.RESULT_WAIT)
-                ? (int) Math.round(rpmCommanded)
-                : 0;
-        shooter.setFlywheelTarget(rpmTarget);
-
-        switch (state) {
-            case DRIVE_AIM:
-                navigator.driveToRangeAndAim(rangeTargetIn);
-                shooter.closeLift();
-                if (navigator.atAimPose(rangeTargetIn)) {
-                    transitionTo(State.REQUEST_PLAN);
-                }
-                break;
-
-            case REQUEST_PLAN:
-                if (!planRequested) {
-                    plannerBridge.sendRequestShotPlan(lastRange, lastBattery, pose, rpmHint);
-                    planRequested = true;
-                }
-                transitionTo(State.SPINUP_WAIT);
-                break;
-
-            case SPINUP_WAIT:
-                if (currentPlan.isFireNow()) {
-                    fireNowLatched = true;
-                    if (fireCommandedAtMs < 0) {
-                        fireCommandedAtMs = currentPlan.getReceivedAtMs();
-                    }
-                    currentPlan.consumeFireNow();
-                }
-                boolean ready = shooter.isReady(RPM_READY_TOL);
-                if (ready && fireNowLatched) {
-                    transitionTo(State.FIRE_SEQ);
-                }
-                break;
-
-            case FIRE_SEQ:
-                beginFireSequence(nowMs);
-                transitionTo(State.RESULT_WAIT);
-                break;
-
-            case RESULT_WAIT:
-                if (!resultPrimed) {
-                    resultPrimed = true;
-                    resultWindowDeadlineMs = nowMs + POST_FIRE_WINDOW_MS;
-                    observationSent = false;
-                    shotFired = false;
-                    shotDetectedMs = -1;
-                    rpmAtFire = 0;
-                    hitLatched = -1;
-                    gateTriggered = false;
-                    g1APrev = gamepad1 != null && gamepad1.a;
-                    g1BPrev = gamepad1 != null && gamepad1.b;
-                    g2APrev = gamepad2 != null && gamepad2.a;
-                    g2BPrev = gamepad2 != null && gamepad2.b;
-                }
-                monitorShot(nowMs, pose);
-                break;
-        }
-
-        renderTelemetry(pose);
-    }
-
-    private void monitorShot(long nowMs, PedroShotNavigator.PoseSnapshot pose) {
-        if (!shotFired) {
-            double drop = rpmCommanded - rpmMeasured;
-            if (rpmCommanded > 0 && drop >= RPM_DIP_THRESHOLD) {
-                shotFired = true;
-                rpmAtFire = (int) Math.round(rpmMeasured);
-                shotDetectedMs = nowMs;
-            }
-        }
-
-        if (hitLatched == -1) {
-            int manual = readManualShotInput();
-            if (manual != -1) {
-                hitLatched = manual;
-            } else if (!gateTriggered) {
-                double gate = readGateInches();
-                if (gate > 0 && gate <= GATE_TRIGGER_IN) {
-                    gateTriggered = true;
-                    hitLatched = 1;
-                }
-            }
-        }
-
-        if (nowMs >= resultWindowDeadlineMs && hitLatched == -1) {
-            hitLatched = 0;
-        }
-
-        if (!observationSent && shotFired && hitLatched != -1 && nowMs >= resultWindowDeadlineMs) {
-            long latency = (fireCommandedAtMs >= 0 && shotDetectedMs >= 0) ? (shotDetectedMs - fireCommandedAtMs) : -1;
-            plannerBridge.sendObsShot(
-                    lastRange,
-                    lastBattery,
-                    (int) Math.round(rpmCommanded),
-                    rpmAtFire,
-                    hitLatched,
-                    latency,
-                    pose,
-                    lastHeadingToTag
-            );
-            if (hitLatched == 1) {
-                rangeTargetIn = clampRange(rangeTargetIn + STEP_IN);
-            } else {
-                rangeTargetIn = clampRange(rangeTargetIn);
-            }
-            shooter.closeLift();
-            shooter.stopIntake();
-            fireNowLatched = false;
-            fireCommandedAtMs = -1;
-            observationSent = true;
-            transitionTo(State.DRIVE_AIM);
-        }
-    }
-
-    private void beginFireSequence(long nowMs) {
-        if (!fireSeqPrimed) {
-            fireSeqPrimed = true;
-            shooter.openLift();
-            shooter.pulseIntake(nowMs);
-            shotFired = false;
-            gateTriggered = false;
-        }
-    }
-
-    private void transitionTo(State newState) {
-        if (state == newState) {
+        waitForStart();
+        if (isStopRequested()) {
             return;
         }
-        state = newState;
-        if (newState == State.DRIVE_AIM) {
-            planRequested = false;
-            resultPrimed = false;
-            fireSeqPrimed = false;
-            fireNowLatched = false;
-            fireCommandedAtMs = -1;
-            currentPlan = ShotPlan.idle();
-            pendingPlan = null;
-        } else if (newState == State.REQUEST_PLAN) {
-            planRequested = false;
-            fireNowLatched = false;
-            fireCommandedAtMs = -1;
-            currentPlan = ShotPlan.idle();
-            pendingPlan = null;
-        } else if (newState == State.SPINUP_WAIT) {
-            resultPrimed = false;
-            fireSeqPrimed = false;
-        } else if (newState == State.FIRE_SEQ) {
-            resultPrimed = false;
-        } else if (newState == State.RESULT_WAIT) {
-            resultPrimed = false;
+
+        ElapsedTime runtime = new ElapsedTime();
+        runtime.reset();
+        sessionStartMs = 0L;
+        String sessionId = String.format(Locale.US, "trainer-%d", System.currentTimeMillis());
+        bridge.setSessionId(sessionId);
+
+        while (opModeIsActive() && !isStopRequested() && !sessionAborted) {
+            long nowMs = (long) runtime.milliseconds();
+            if (sessionStartMs == 0L) {
+                sessionStartMs = nowMs;
+                bridge.sendHello(sessionId, nowMs);
+            }
+
+            boolean manualOverride = isManualOverride();
+
+            navigator.update();
+            navigator.driveToTarget();
+
+            double rawVoltage = readVoltage();
+            double filteredVoltage = rpmProvider.updateAndGetLoadVoltage(nowMs, rawVoltage, shooter.isUnderLoad());
+            double rangeIn = navigator.getRangeIn();
+            double headingToTag = navigator.getHeadingToTagDeg();
+
+            RpmProvider.Target target = rpmProvider.target(rangeIn, filteredVoltage);
+            double rpmBase = target.rpmBase;
+            double rpmCommand = target.rpmTarget;
+
+            if (warmupComplete) {
+                ShotPlan planUpdate = mailbox.poll(nowMs);
+                if (planUpdate != null) {
+                    handlePlan(planUpdate, nowMs);
+                }
+
+                if (activePlan != null && nowMs > activePlan.validUntilMs) {
+                    RobotLog.w(TAG, "Command %s expired before execution", activePlan.cmdId);
+                    activePlan = null;
+                    planShotTriggered = false;
+                    waitingForCommand = true;
+                }
+
+                if (activePlan != null) {
+                    if (activePlan.hasAbsoluteTarget()) {
+                        Double absolute = activePlan.getRpmTargetAbs();
+                        if (absolute != null) {
+                            rpmCommand = absolute;
+                        }
+                    } else {
+                        Double bias = activePlan.getRpmBias();
+                        if (bias != null) {
+                            rpmCommand = target.rpmTarget + bias;
+                        }
+                    }
+                }
+            }
+
+            if (manualOverride || sessionAborted) {
+                shooter.stop(nowMs);
+            } else {
+                shooter.setTargetRpm(rpmCommand, nowMs);
+            }
+
+            shooter.update(nowMs);
+
+            ShotPlannerBridge.PoseSnapshot pose = navigator.getPoseSnapshot();
+            ShotPlannerBridge.ShotContext context = new ShotPlannerBridge.ShotContext(
+                    pose,
+                    rangeIn,
+                    filteredVoltage,
+                    shooter.getMeasuredRpm(),
+                    rpmBase,
+                    rpmCommand,
+                    headingToTag);
+
+            if (nowMs - lastObsSentMs >= OBS_INTERVAL_MS) {
+                bridge.sendObservation(context, nowMs);
+                lastObsSentMs = nowMs;
+            }
+
+            if (!warmupComplete) {
+                runWarmup(nowMs, context, rpmBase, rpmCommand, pose, headingToTag);
+            } else {
+                executePlanLoop(nowMs, manualOverride, context, rpmCommand, pose, headingToTag);
+            }
+
+            updateTelemetry(nowMs, manualOverride, filteredVoltage, rpmBase, rpmCommand);
+            idle();
+        }
+
+        shooter.stop((long) runtime.milliseconds());
+    }
+
+    private void runWarmup(long nowMs,
+                           ShotPlannerBridge.ShotContext context,
+                           double rpmBase,
+                           double rpmCommand,
+                           ShotPlannerBridge.PoseSnapshot pose,
+                           double headingToTag) {
+        if (warmupShotsRemaining <= 0) {
+            finalizeWarmup();
+            waitingForCommand = true;
+            return;
+        }
+
+        boolean aimed = navigator.isAimed();
+        boolean ready = shooter.isReady(nowMs);
+
+        if (aimed && ready && !shooter.isLockedOut(nowMs)) {
+            shooter.fire(nowMs);
+        }
+
+        ShooterController.ShotMetrics metrics = shooter.pollShotMetrics();
+        if (metrics != null) {
+            warmupShotsRemaining -= 1;
+            double biasSample = metrics.rpmAtFire - rpmBase;
+            warmupBiasSamples.add(biasSample);
+            String trialId = String.format(Locale.US, "warmup_%d", WARMUP_SHOTS - warmupShotsRemaining);
+            ShotPlannerBridge.ShotToken token = new ShotPlannerBridge.ShotToken(
+                    trialId,
+                    metrics.fireTimestampMs,
+                    context.rangeIn,
+                    context.vBattLoad,
+                    rpmCommand,
+                    metrics.rpmAtFire,
+                    metrics.timeToReadyMs,
+                    pose,
+                    headingToTag);
+            bridge.sendShotToken(token);
+        }
+
+        if (warmupShotsRemaining <= 0) {
+            finalizeWarmup();
+            waitingForCommand = true;
         }
     }
 
-    private double readBatteryVoltage() {
-        double min = Double.POSITIVE_INFINITY;
-        if (voltageSensors != null) {
-            for (VoltageSensor sensor : voltageSensors) {
-                try {
-                    double v = sensor.getVoltage();
-                    if (v > 0) {
-                        min = Math.min(min, v);
-                    }
-                } catch (Exception ignored) {
+    private void finalizeWarmup() {
+        warmupComplete = true;
+        double biasSum = 0.0;
+        for (Double sample : warmupBiasSamples) {
+            biasSum += sample;
+        }
+        double sessionBias = warmupBiasSamples.isEmpty() ? 0.0 : biasSum / warmupBiasSamples.size();
+        rpmProvider.setSessionBias(sessionBias);
+        RobotLog.ii(TAG, "Warmup complete; session bias %.2f", sessionBias);
+    }
+
+    private void executePlanLoop(long nowMs,
+                                 boolean manualOverride,
+                                 ShotPlannerBridge.ShotContext context,
+                                 double rpmCommand,
+                                 ShotPlannerBridge.PoseSnapshot pose,
+                                 double headingToTag) {
+        if (sessionAborted) {
+            return;
+        }
+
+        if (context.vBattLoad < BATTERY_ABORT_V) {
+            sessionAborted = true;
+            RobotLog.e(TAG, "Battery below floor %.2fV; aborting", context.vBattLoad);
+            shooter.stop(nowMs);
+            return;
+        }
+
+        if (waitingForCommand && nowMs - lastPlanRequestMs >= PLAN_REQUEST_INTERVAL_MS) {
+            bridge.sendRequestShotPlan(context, nowMs);
+            lastPlanRequestMs = nowMs;
+        }
+
+        if (activePlan != null && !manualOverride) {
+            boolean aimed = navigator.isAimed();
+            boolean ready = shooter.isReady(nowMs);
+            boolean loiter = activePlan.loiter;
+
+            if (!loiter && aimed && ready && !planShotTriggered && !shooter.isLockedOut(nowMs)) {
+                if (shooter.fire(nowMs)) {
+                    planShotTriggered = true;
                 }
             }
         }
-        if (!Double.isFinite(min)) {
-            min = 12.0;
+
+        ShooterController.ShotMetrics metrics = shooter.pollShotMetrics();
+        if (metrics != null) {
+            String trialId = (activePlan != null) ? activePlan.trialId : String.format(Locale.US, "shot_%d", metrics.fireTimestampMs);
+            ShotPlannerBridge.ShotToken token = new ShotPlannerBridge.ShotToken(
+                    trialId,
+                    metrics.fireTimestampMs,
+                    context.rangeIn,
+                    context.vBattLoad,
+                    rpmCommand,
+                    metrics.rpmAtFire,
+                    metrics.timeToReadyMs,
+                    pose,
+                    headingToTag);
+            bridge.sendShotToken(token);
+            planShotTriggered = false;
+            if (activePlan != null && !activePlan.loiter) {
+                waitingForCommand = true;
+                activePlan = null;
+            }
         }
-        return min;
     }
 
-    private int readManualShotInput() {
-        int result = -1;
-        boolean g1A = gamepad1 != null && gamepad1.a;
-        if (g1A && !g1APrev) {
-            result = 1;
+    private void handlePlan(ShotPlan plan, long nowMs) {
+        if (warmupComplete) {
+            navigator.applyRangeDelta(plan.rangeDeltaIn);
+            navigator.setHeadingOffsetDeg(plan.headingOffsetDeg);
+            currentHeadingOffsetDeg = plan.headingOffsetDeg;
+            activePlan = plan;
+            planShotTriggered = false;
+            waitingForCommand = plan.loiter;
+            if (waitingForCommand) {
+                lastPlanRequestMs = nowMs;
+            }
         }
-        g1APrev = g1A;
-        boolean g1B = gamepad1 != null && gamepad1.b;
-        if (g1B && !g1BPrev) {
-            result = 0;
-        }
-        g1BPrev = g1B;
-        boolean g2A = gamepad2 != null && gamepad2.a;
-        if (g2A && !g2APrev) {
-            result = 1;
-        }
-        g2APrev = g2A;
-        boolean g2B = gamepad2 != null && gamepad2.b;
-        if (g2B && !g2BPrev) {
-            result = 0;
-        }
-        g2BPrev = g2B;
-        return result;
     }
 
-    private double readGateInches() {
-        if (gateSensor == null) {
-            return -1.0;
-        }
+    private void loadInitialModel() {
         try {
-            double inches = gateSensor.getDistance(com.qualcomm.robotcore.external.navigation.DistanceUnit.INCH);
-            return (Double.isNaN(inches) || inches <= 0) ? -1.0 : inches;
+            InputStream stream = hardwareMap.appContext.getAssets().open("rpm_model.json");
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(stream, StandardCharsets.UTF_8))) {
+                StringBuilder sb = new StringBuilder();
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    sb.append(line);
+                }
+                JsonElement parsed = GsonCompat.parse(sb.toString());
+                if (parsed != null && parsed.isJsonObject()) {
+                    JsonObject obj = parsed.getAsJsonObject();
+                    rpmProvider.applyUpdate(obj);
+                    RobotLog.i(TAG, "Loaded default rpm_model.json");
+                }
+            }
         } catch (Exception e) {
-            return -1.0;
+            RobotLog.w(TAG, "No default rpm_model.json found: %s", e.getMessage());
         }
     }
 
-    private double clampRange(double value) {
-        return Math.max(MIN_RANGE_IN, Math.min(MAX_RANGE_IN, value));
-    }
-
-    private void renderTelemetry(PedroShotNavigator.PoseSnapshot pose) {
-        telemetry.addData("state", state);
-        telemetry.addData("rangeTarget", String.format(Locale.US, "%.1f", rangeTargetIn));
-        telemetry.addData("rangeActual", String.format(Locale.US, "%.1f", lastRange));
-        telemetry.addData("rpmCmd", String.format(Locale.US, "%.0f", rpmCommanded));
-        telemetry.addData("rpmMeas", String.format(Locale.US, "%.0f", rpmMeasured));
-        telemetry.addData("bias", String.format(Locale.US, "%.1f", currentPlan.getRpmBias()));
-        telemetry.addData("fireNow", fireNowLatched);
-        telemetry.addData("loiter", currentPlan.isLoiter());
-        telemetry.addData("batteryV", String.format(Locale.US, "%.2f", lastBattery));
-        telemetry.addData("pose", String.format(Locale.US, "(%.1f, %.1f, %.1f°)",
-                pose != null ? pose.xIn : 0.0,
-                pose != null ? pose.yIn : 0.0,
-                pose != null ? pose.headingDeg : 0.0));
-        telemetry.addData("headingToTag", String.format(Locale.US, "%.1f", lastHeadingToTag));
-        telemetry.addData("gate_in", String.format(Locale.US, "%.1f", readGateInches()));
+    private void updateTelemetry(long nowMs,
+                                 boolean manualOverride,
+                                 double voltage,
+                                 double rpmBase,
+                                 double rpmCmd) {
+        telemetry.addData("state", warmupComplete ? (activePlan != null ? "plan" : (waitingForCommand ? "await_cmd" : "idle")) : "warmup");
+        telemetry.addData("manual", manualOverride);
+        telemetry.addData("rangeTarget", String.format(Locale.US, "%.1f", navigator.getRangeTarget()));
+        telemetry.addData("rangeIn", String.format(Locale.US, "%.1f", navigator.getRangeIn()));
+        telemetry.addData("headingOffset", String.format(Locale.US, "%.1f", currentHeadingOffsetDeg));
+        telemetry.addData("batteryV", String.format(Locale.US, "%.2f", voltage));
+        telemetry.addData("rpmBase", String.format(Locale.US, "%.0f", rpmBase));
+        telemetry.addData("rpmCmd", String.format(Locale.US, "%.0f", rpmCmd));
+        telemetry.addData("rpmMeas", String.format(Locale.US, "%.0f", shooter.getMeasuredRpm()));
+        telemetry.addData("ready", shooter.isReady(nowMs));
+        telemetry.addData("aimed", navigator.isAimed());
+        telemetry.addData("planId", activePlan != null ? activePlan.cmdId : "none");
+        telemetry.addData("loiter", activePlan != null && activePlan.loiter);
+        telemetry.addData("sessionBias", String.format(Locale.US, "%.1f", rpmProvider.getSessionBias()));
         telemetry.update();
     }
 
-    @Override
-    public void stop() {
-        if (shooter != null) {
-            shooter.reset();
+    private boolean isManualOverride() {
+        return abs(gamepad1.left_stick_x) > 0.15
+                || abs(gamepad1.left_stick_y) > 0.15
+                || abs(gamepad2.left_stick_x) > 0.15
+                || abs(gamepad2.left_stick_y) > 0.15
+                || gamepad1.right_trigger > 0.2
+                || gamepad2.right_trigger > 0.2;
+    }
+
+    private double readVoltage() {
+        if (voltageSensor == null) {
+            return 12.0;
+        }
+        try {
+            double v = voltageSensor.getVoltage();
+            if (Double.isNaN(v) || v <= 0) {
+                return 12.0;
+            }
+            return v;
+        } catch (Exception e) {
+            return 12.0;
         }
     }
 }

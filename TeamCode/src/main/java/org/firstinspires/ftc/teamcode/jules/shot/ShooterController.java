@@ -169,6 +169,12 @@ public final class ShooterController {
             if (!readyLatched && nowMs - readyStartMs >= READY_SETTLE_MS) {
                 readyLatched = true;
                 readyAtMs = nowMs;
+                if (targetSetMs > 0L) {
+                    long latency = nowMs - targetSetMs;
+                    readyLatencyMs = Math.max(0L, latency);
+                } else {
+                    readyLatencyMs = 0L;
+                }
             }
         } else {
             readyStartMs = 0L;
@@ -188,7 +194,7 @@ public final class ShooterController {
             if (drop >= DIP_THRESHOLD_RPM) {
                 shotDetected = true;
                 lockoutUntilMs = nowMs + LOCKOUT_MS;
-                pendingShot = new ShotMetrics(filteredRpm, readyLatencyAtFire, fireCommandMs);
+                pendingShot = new ShotMetrics(rpmSnapshotAtFire, readyLatencyAtFire, fireCommandMs);
                 fireCommandMs = 0L;
                 readyLatencyAtFire = 0L;
                 return;
@@ -197,7 +203,7 @@ public final class ShooterController {
                 // Timeout: treat as fired even if dip not detected to avoid stalling the loop.
                 shotDetected = true;
                 lockoutUntilMs = nowMs + LOCKOUT_MS;
-                pendingShot = new ShotMetrics(filteredRpm, readyLatencyAtFire, fireCommandMs);
+                pendingShot = new ShotMetrics(rpmSnapshotAtFire, readyLatencyAtFire, fireCommandMs);
                 fireCommandMs = 0L;
                 readyLatencyAtFire = 0L;
             }

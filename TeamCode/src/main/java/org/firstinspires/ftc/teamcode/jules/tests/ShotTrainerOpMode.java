@@ -186,11 +186,11 @@ public final class ShotTrainerOpMode extends LinearOpMode {
             double rawVoltage = readVoltage();
             double filteredVoltage = rpmProvider.updateAndGetLoadVoltage(runtimeMs, rawVoltage, shooter.isUnderLoad());
             double rangeIn = navigator.getRangeIn();
-            double headingToTag = navigator.getHeadingToTagDeg();
+            double headingErrorDeg = navigator.getHeadingToTagDeg();
 
             RpmProvider.Target target = rpmProvider.target(rangeIn, filteredVoltage);
-            double rpmBase = target.rpmBase;
-            double rpmCommand = target.rpmTarget;
+            double rpmModelBase = target.rpmTarget;
+            double rpmCommand = rpmModelBase;
 
             if (warmupComplete) {
                 if (activePlan != null && System.currentTimeMillis() > activePlan.validUntilMs) {
@@ -209,7 +209,7 @@ public final class ShotTrainerOpMode extends LinearOpMode {
                     } else {
                         Double bias = activePlan.getRpmBias();
                         if (bias != null) {
-                            rpmCommand = target.rpmTarget + bias;
+                            rpmCommand = rpmModelBase + bias;
                         }
                     }
                 }
@@ -229,9 +229,9 @@ public final class ShotTrainerOpMode extends LinearOpMode {
                     rangeIn,
                     filteredVoltage,
                     shooter.getMeasuredRpm(),
-                    rpmBase,
+                    rpmModelBase,
                     rpmCommand,
-                    headingToTag,
+                    headingErrorDeg,
                     wallClockMs);
 
             if (runtimeMs - lastObsSentMs >= OBS_INTERVAL_MS) {
@@ -240,19 +240,19 @@ public final class ShotTrainerOpMode extends LinearOpMode {
             }
 
             if (!warmupComplete) {
-                runWarmup(runtimeMs, context, rpmBase, rpmCommand, pose);
+                runWarmup(runtimeMs, context, rpmModelBase, rpmCommand, pose);
             } else {
                 executePlanLoop(runtimeMs, manualOverride, context, rpmCommand, pose);
             }
 
-            updateTelemetry(runtimeMs, manualOverride, filteredVoltage, rpmBase, rpmCommand);
+            updateTelemetry(runtimeMs, manualOverride, filteredVoltage, rpmModelBase, rpmCommand);
             idle();
         }
     }
 
     private void runWarmup(long runtimeMs,
                            ShotPlannerBridge.ShotContext context,
-                           double rpmBase,
+                           double rpmModelBase,
                            double rpmCommand,
                            ShotPlannerBridge.PoseSnapshot pose) {
         if (warmupShotsRemaining <= 0) {
@@ -271,7 +271,7 @@ public final class ShotTrainerOpMode extends LinearOpMode {
         ShooterController.ShotMetrics metrics = shooter.pollShotMetrics();
         if (metrics != null) {
             warmupShotsRemaining -= 1;
-            double biasSample = metrics.rpmAtFire - rpmBase;
+            double biasSample = metrics.rpmAtFire - rpmModelBase;
             warmupBiasSamples.add(biasSample);
             String trialId = String.format(Locale.US, "warmup_%d", WARMUP_SHOTS - warmupShotsRemaining);
             ShotPlannerBridge.ShotToken token = new ShotPlannerBridge.ShotToken(
@@ -301,6 +301,7 @@ public final class ShotTrainerOpMode extends LinearOpMode {
         }
         double sessionBias = warmupBiasSamples.isEmpty() ? 0.0 : biasSum / warmupBiasSamples.size();
         rpmProvider.setSessionBias(sessionBias);
+        warmupBiasSamples.clear();
         RobotLog.ii(TAG, "Warmup complete; session bias %.2f", sessionBias);
     }
 

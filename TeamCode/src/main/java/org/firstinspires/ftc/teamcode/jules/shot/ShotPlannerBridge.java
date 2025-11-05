@@ -50,6 +50,7 @@ public final class ShotPlannerBridge implements AutoCloseable {
         public final double rangeIn;
         public final double vBattLoad;
         public final double rpmMeasured;
+        /** Nominal RPM before planner bias (already includes model deltas/session bias). */
         public final double rpmBase;
         public final double rpmTargetCmd;
         public final double headingToTagDeg;
@@ -222,6 +223,7 @@ public final class ShotPlannerBridge implements AutoCloseable {
                 reconnectAttempts = 0;
                 RobotLog.ii(TAG, "Jules connected (%s)", wsUrl);
                 flushOutbound();
+                sendHelloOnConnect();
             }
 
             @Override
@@ -354,14 +356,7 @@ public final class ShotPlannerBridge implements AutoCloseable {
 
     public void sendHello(String sessionId, long nowMs) {
         setSessionId(sessionId);
-        JsonObject payload = new JsonObject();
-        payload.addProperty("type", "hello");
-        payload.addProperty("session_id", this.sessionId);
-        payload.addProperty("bot_id", botId);
-        payload.addProperty("sdk", "ftc");
-        payload.addProperty("proto", "jcp.v2");
-        payload.addProperty("ts", nowMs);
-        enqueue(payload);
+        enqueue(buildHelloPayload(nowMs));
     }
 
     public void sendObservation(ShotContext context) {
@@ -428,6 +423,24 @@ public final class ShotPlannerBridge implements AutoCloseable {
         obj.addProperty("y", pose.yIn);
         obj.addProperty("h", pose.headingDeg);
         return obj;
+    }
+
+    private JsonObject buildHelloPayload(long nowMs) {
+        JsonObject payload = new JsonObject();
+        payload.addProperty("type", "hello");
+        payload.addProperty("session_id", sessionId);
+        payload.addProperty("bot_id", botId);
+        payload.addProperty("sdk", "ftc");
+        payload.addProperty("proto", "jcp.v2");
+        payload.addProperty("ts", nowMs);
+        return payload;
+    }
+
+    private void sendHelloOnConnect() {
+        if (sessionId == null || sessionId.isEmpty()) {
+            return;
+        }
+        enqueue(buildHelloPayload(System.currentTimeMillis()));
     }
 
     /** Attempt to parse a planner command; returns {@code null} when ignored. */

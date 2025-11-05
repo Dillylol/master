@@ -25,7 +25,9 @@ import java.util.Map;
 public final class RpmProvider {
 
     public static final class Target {
+        /** Base model output after voltage scaling (no delta bins or session bias). */
         public final double rpmBase;
+        /** Nominal target before planner bias (base + delta bins + session bias). */
         public final double rpmTarget;
 
         Target(double rpmBase, double rpmTarget) {
@@ -229,15 +231,16 @@ public final class RpmProvider {
             scaled = base * Math.pow(vNom / voltage, gamma);
         }
 
-        double delta = computeDelta(distance, voltage) + sessionBias;
-        double rpmTarget = scaled + delta;
+        double delta = computeDelta(distance, voltage);
+        double rpmBase = Double.isFinite(scaled) ? scaled : base;
+        double rpmTarget = rpmBase + delta + sessionBias;
         if (!Double.isFinite(rpmTarget)) {
-            rpmTarget = scaled;
+            rpmTarget = rpmBase;
         }
 
-        lastBase = base;
+        lastBase = rpmBase;
         lastTarget = rpmTarget;
-        return new Target(base, rpmTarget);
+        return new Target(rpmBase, rpmTarget);
     }
 
     private double computeDelta(double distanceIn, double voltage) {

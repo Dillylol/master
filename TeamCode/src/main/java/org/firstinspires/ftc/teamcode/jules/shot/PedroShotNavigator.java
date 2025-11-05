@@ -130,9 +130,9 @@ public final class PedroShotNavigator {
         if (pose == null) {
             return 0.0;
         }
-        double dx = tagPose.getX() - pose.getX();
-        double dy = tagPose.getY() - pose.getY();
-        return Math.toDegrees(Math.atan2(dy, dx));
+        double desired = desiredHeadingRad();
+        double error = angleWrap(desired - pose.getHeading());
+        return Math.toDegrees(error);
     }
 
     private boolean shouldHoldCurrentPath(Pose target) {
